@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
-	"log"
+	log "github.com/cihub/seelog"
 	"net"
 	"os"
 	"strings"
@@ -59,7 +59,8 @@ var ErrStopped = errors.New("stopped")
 func NewWriter(addr string) *Writer {
 	hostname, err := os.Hostname()
 	if err != nil {
-		log.Fatalf("ERROR: unable to get hostname %s", err.Error())
+		log.Criticalf("unable to get hostname %s", err.Error())
+		os.Exit(1)
 	}
 	return &Writer{
 		transactionChan: make(chan *WriterTransaction),
@@ -175,7 +176,7 @@ func (w *Writer) connect() error {
 
 	conn, err := net.DialTimeout("tcp", w.Addr, time.Second*5)
 	if err != nil {
-		log.Printf("ERROR: [%s] failed to dial %s - %s", w, w.Addr, err)
+		log.Errorf("[%s] failed to dial %s - %s", w, w.Addr, err)
 		atomic.StoreInt32(&w.state, StateInit)
 		return err
 	}
@@ -186,7 +187,7 @@ func (w *Writer) connect() error {
 	w.SetWriteDeadline(time.Now().Add(w.WriteTimeout))
 	_, err = w.Write(MagicV2)
 	if err != nil {
-		log.Printf("ERROR: [%s] failed to write magic - %s", w, err)
+		log.Errorf("[%s] failed to write magic - %s", w, err)
 		w.close()
 		return err
 	}
@@ -198,7 +199,7 @@ func (w *Writer) connect() error {
 	ci["feature_negotiation"] = true
 	cmd, err := Identify(ci)
 	if err != nil {
-		log.Printf("ERROR: [%s] failed to create IDENTIFY command - %s", w, err)
+		log.Errorf("[%s] failed to create IDENTIFY command - %s", w, err)
 		w.close()
 		return err
 	}
@@ -206,7 +207,7 @@ func (w *Writer) connect() error {
 	w.SetWriteDeadline(time.Now().Add(w.WriteTimeout))
 	err = cmd.Write(w)
 	if err != nil {
-		log.Printf("ERROR: [%s] failed to write IDENTIFY - %s", w, err)
+		log.Errorf("[%s] failed to write IDENTIFY - %s", w, err)
 		w.close()
 		return err
 	}
@@ -214,14 +215,14 @@ func (w *Writer) connect() error {
 	w.SetReadDeadline(time.Now().Add(w.HeartbeatInterval * 2))
 	resp, err := ReadResponse(w)
 	if err != nil {
-		log.Printf("ERROR: [%s] failed to read IDENTIFY response - %s", w, err)
+		log.Errorf("[%s] failed to read IDENTIFY response - %s", w, err)
 		w.close()
 		return err
 	}
 
 	frameType, data, err := UnpackResponse(resp)
 	if err != nil {
-		log.Printf("ERROR: [%s] failed to unpack IDENTIFY response - %s", w, resp)
+		log.Errorf("[%s] failed to unpack IDENTIFY response - %s", w, resp)
 		w.close()
 		return err
 	}
@@ -261,24 +262,24 @@ func (w *Writer) messageRouter() {
 			w.SetWriteDeadline(time.Now().Add(w.WriteTimeout))
 			err := t.cmd.Write(w.Conn)
 			if err != nil {
-				log.Printf("ERROR: [%s] failed writing %s", w, err)
+				log.Errorf("[%s] failed writing %s", w, err)
 				w.close()
 				goto exit
 			}
 		case buf := <-w.dataChan:
 			frameType, data, err := UnpackResponse(buf)
 			if err != nil {
-				log.Printf("ERROR: [%s] failed (%s) unpacking response %d %s", w, err, frameType, data)
+				log.Errorf("[%s] failed (%s) unpacking response %d %s", w, err, frameType, data)
 				w.close()
 				goto exit
 			}
 
 			if frameType == FrameTypeResponse && bytes.Equal(data, []byte("_heartbeat_")) {
-				log.Printf("[%s] heartbeat received", w)
+				log.Debugf("[%s] heartbeat received", w)
 				w.SetWriteDeadline(time.Now().Add(w.WriteTimeout))
 				err := Nop().Write(w.Conn)
 				if err != nil {
-					log.Printf("ERROR: [%s] failed sending heartbeat - %s", w, err)
+					log.Errorf("[%s] failed sending heartbeat - %s", w, err)
 					w.close()
 					goto exit
 				}
@@ -298,7 +299,7 @@ func (w *Writer) messageRouter() {
 
 exit:
 	w.wg.Done()
-	log.Printf("[%s] exiting messageRouter()", w)
+	log.Debugf("[%s] exiting messageRouter()", w)
 }
 
 func (w *Writer) transactionCleanup() {
@@ -315,7 +316,7 @@ func (w *Writer) readLoop() {
 		w.SetReadDeadline(time.Now().Add(w.HeartbeatInterval * 2))
 		resp, err := ReadResponse(rbuf)
 		if err != nil {
-			log.Printf("ERROR: [%s] reading response %s", w, err)
+			log.Errorf("[%s] reading response %s", w, err)
 			if !strings.Contains(err.Error(), "use of closed network connection") {
 				w.close()
 			}
@@ -330,7 +331,7 @@ func (w *Writer) readLoop() {
 
 exit:
 	w.wg.Done()
-	log.Printf("[%s] exiting readLoop()", w)
+	log.Debugf("[%s] exiting readLoop()", w)
 }
 
 func (t *WriterTransaction) done() {
