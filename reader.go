@@ -721,7 +721,9 @@ func (q *Reader) cleanupConnection(c *nsqConn) {
 			select {
 			case <-c.finishedMessages:
 				atomic.AddInt64(&c.messagesInFlight, -1)
+				log.Debugf("[%s] finishedMessages %s", c, c.messagesInFlight)
 			case <-drainExitChan:
+				log.Debugf("[%s] drainExitChan finishedMessages %s", c, c.messagesInFlight)
 				if atomic.LoadInt64(&c.messagesInFlight) > 0 {
 					continue
 				}
