@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,12 +47,12 @@ type Handler interface {
 //
 //     &FinishedMessage{messageID, requeueDelay, true|false}
 //
-// To the supplied responseChannel to indicate that a message is processed.
+// To the supplied responseChan to indicate that a message is processed.
 type AsyncHandler interface {
-	HandleMessage(message *Message, responseChannel chan *FinishedMessage)
+	HandleMessage(message *Message, responseChan chan *FinishedMessage)
 }
 
-// FinishedMessage is the data type used over responseChannel in AsyncHandlers
+// FinishedMessage is the data type used over responseChan in AsyncHandlers
 type FinishedMessage struct {
 	Id             MessageID
 	RequeueDelayMs int
@@ -63,11 +64,6 @@ type FinishedMessage struct {
 // exceeded the Reader specified MaxAttemptCount)
 type FailedMessageLogger interface {
 	LogFailedMessage(message *Message)
-}
-
-type incomingMessage struct {
-	*Message
-	responseChannel chan *FinishedMessage
 }
 
 // Reader is a high-level type to consume from NSQ.
@@ -133,7 +129,7 @@ type Reader struct {
 	needRDYRedistributed int32
 	backoffCounter       int32
 
-	incomingMessages chan *incomingMessage
+	incomingMessages chan *Message
 
 	pendingConnections map[string]bool
 	nsqConnections     map[string]*nsqConn
@@ -187,7 +183,7 @@ func NewReader(topic string, channel string) (*Reader, error) {
 
 		DeflateLevel: 6,
 
-		incomingMessages: make(chan *incomingMessage),
+		incomingMessages: make(chan *Message),
 
 		pendingConnections: make(map[string]bool),
 		nsqConnections:     make(map[string]*nsqConn),
@@ -202,6 +198,199 @@ func NewReader(topic string, channel string) (*Reader, error) {
 	q.SetMaxBackoffDuration(120 * time.Second)
 	go q.rdyLoop()
 	return q, nil
+}
+
+// Configure takes an option as a string and a value as an interface and
+// attempts to set the appropriate configuration option on the reader instance.
+//
+// It attempts to coerce the value into the right format depending on the named
+// option and the underlying type of the value passed in.
+//
+// It returns an error for an invalid option or value.
+func (q *Reader) Configure(option string, value interface{}) error {
+	getDuration := func(v interface{}) (time.Duration, error) {
+		switch v.(type) {
+		case string:
+			return time.ParseDuration(v.(string))
+		case int, int16, uint16, int32, uint32, int64, uint64:
+			// treat like ms
+			return time.Duration(reflect.ValueOf(v).Int()) * time.Millisecond, nil
+		case time.Duration:
+			return v.(time.Duration), nil
+		}
+		return 0, errors.New("invalid value type")
+	}
+
+	getBool := func(v interface{}) (bool, error) {
+		switch value.(type) {
+		case bool:
+			return value.(bool), nil
+		case string:
+			return strconv.ParseBool(v.(string))
+		case int, int16, uint16, int32, uint32, int64, uint64:
+			return reflect.ValueOf(value).Int() == 0, nil
+		}
+		return false, errors.New("invalid value type")
+	}
+
+	getFloat64 := func(v interface{}) (float64, error) {
+		switch value.(type) {
+		case string:
+			return strconv.ParseFloat(value.(string), 64)
+		case int, int16, uint16, int32, uint32, int64, uint64:
+			return float64(reflect.ValueOf(value).Int()), nil
+		case float64:
+			return value.(float64), nil
+		}
+		return 0, errors.New("invalid value type")
+	}
+
+	getInt64 := func(v interface{}) (int64, error) {
+		switch value.(type) {
+		case string:
+			return strconv.ParseInt(v.(string), 10, 64)
+		case int, int16, uint16, int32, uint32, int64, uint64:
+			return reflect.ValueOf(value).Int(), nil
+		}
+		return 0, errors.New("invalid value type")
+	}
+
+	switch option {
+	case "read_timeout":
+		v, err := getDuration(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		if v > 5*time.Minute || v < 100*time.Millisecond {
+			return errors.New(fmt.Sprintf("invalid %s ! 100ms <= %s <= 5m", option, v))
+		}
+		q.ReadTimeout = v
+	case "write_timeout":
+		v, err := getDuration(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		if v > 5*time.Minute || v < 100*time.Millisecond {
+			return errors.New(fmt.Sprintf("invalid %s ! 100ms <= %s <= 5m", option, v))
+		}
+		q.WriteTimeout = v
+	case "lookupd_poll_interval":
+		v, err := getDuration(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		if v > 5*time.Minute || v < 5*time.Second {
+			return errors.New(fmt.Sprintf("invalid %s ! 5s <= %s <= 5m", option, v))
+		}
+		q.LookupdPollInterval = v
+	case "lookupd_poll_jitter":
+		v, err := getFloat64(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		if v < 0 || v > 1 {
+			return errors.New(fmt.Sprintf("invalid %d ! 0 <= %s <= 1", option, err))
+		}
+		q.LookupdPollJitter = v
+	case "max_requeue_delay":
+		v, err := getDuration(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		if v > 60*time.Minute || v < 0 {
+			return errors.New(fmt.Sprintf("invalid %s ! 0 <= %s <= 60m", option, v))
+		}
+		q.MaxRequeueDelay = v
+	case "default_requeue_delay":
+		v, err := getDuration(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		if v > 60*time.Minute || v < 0 {
+			return errors.New(fmt.Sprintf("invalid %s ! 0 <= %s <= 60m", option, v))
+		}
+		q.DefaultRequeueDelay = v
+	case "backoff_multiplier":
+		v, err := getDuration(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		if v > 60*time.Minute || v < time.Second {
+			return errors.New(fmt.Sprintf("invalid %s ! 1s <= %s <= 60m", option, v))
+		}
+		q.BackoffMultiplier = v
+	case "max_attempt_count":
+		v, err := getInt64(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		if v < 1 || v > 65535 {
+			return errors.New(fmt.Sprintf("invalid %s ! 1 <= %d <= 65535", option, v))
+		}
+		q.MaxAttemptCount = uint16(v)
+	case "low_rdy_idle_timeout":
+		v, err := getDuration(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		if v > 5*time.Minute || v < time.Second {
+			return errors.New(fmt.Sprintf("invalid %s ! 1s <= %s <= 5m", option, v))
+		}
+		q.LowRdyIdleTimeout = v
+	case "tls_v1":
+		v, err := getBool(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		q.TLSv1 = v
+	case "deflate":
+		v, err := getBool(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		q.Deflate = v
+	case "deflate_level":
+		v, err := getInt64(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		if v < 1 || v > 9 {
+			return errors.New(fmt.Sprintf("invalid %s ! 1 <= %d <= 9", option, err))
+		}
+		q.DeflateLevel = int(v)
+	case "snappy":
+		v, err := getBool(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		q.Snappy = v
+	case "max_in_flight":
+		v, err := getInt64(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		if v < 1 {
+			return errors.New(fmt.Sprintf("invalid %s ! 1 <= %d", option, v))
+		}
+		q.SetMaxInFlight(int(v))
+	case "max_backoff_duration":
+		v, err := getDuration(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		if v > 60*time.Minute || v < 0 {
+			return errors.New(fmt.Sprintf("invalid %s ! 0 <= %s <= 60m", option, v))
+		}
+		q.SetMaxBackoffDuration(v)
+	case "verbose":
+		v, err := getBool(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		q.VerboseLogging = v
+	}
+
+	return nil
 }
 
 // ConnectionMaxInFlight calculates the per-connection max-in-flight count.
@@ -576,6 +765,7 @@ func (q *Reader) readLoop(c *nsqConn) {
 		case FrameTypeMessage:
 			msg, err := DecodeMessage(data)
 			msg.cmdChan = c.cmdChan
+			msg.responseChan = c.finishedMessages
 
 			if err != nil {
 				handleError(q, c, fmt.Sprintf("[%s] error (%s) decoding message %s",
@@ -596,7 +786,7 @@ func (q *Reader) readLoop(c *nsqConn) {
 					c, remain, msg.Id, msg.Body)
 			}
 
-			q.incomingMessages <- &incomingMessage{msg, c.finishedMessages}
+			q.incomingMessages <- msg
 			c.rdyChan <- c
 		case FrameTypeResponse:
 			switch {
@@ -705,10 +895,9 @@ func (q *Reader) stopFinishLoop(c *nsqConn) {
 }
 
 func (q *Reader) cleanupConnection(c *nsqConn) {
-	drainExitChan := make(chan int)
-
 	go func() {
 		<-c.drainReady
+		ticker := time.NewTicker(100 * time.Millisecond)
 		// finishLoop has exited, drain any remaining in flight messages
 		for {
 			// we're racing with readLoop which potentially has a message
@@ -718,22 +907,25 @@ func (q *Reader) cleanupConnection(c *nsqConn) {
 			// ensuring that both finishLoop and readLoop have exited, at which
 			// point we can be guaranteed that messagesInFlight accurately
 			// represents whatever is left... continue until 0.
+			var msgsInFlight int64
 			select {
 			case <-c.finishedMessages:
-				atomic.AddInt64(&c.messagesInFlight, -1)
-			case <-drainExitChan:
-				if atomic.LoadInt64(&c.messagesInFlight) > 0 {
-					continue
-				}
-				log.Debugf("[%s] done draining finishedMessages", c)
-				return
+				msgsInFlight = atomic.AddInt64(&c.messagesInFlight, -1)
+			case <-ticker.C:
+				msgsInFlight = atomic.LoadInt64(&c.messagesInFlight)
 			}
+			if msgsInFlight > 0 {
+				log.Debugf("[%s] draining... waiting for %d messages in flight", c, msgsInFlight)
+				continue
+			}
+			log.Debugf("[%s] done draining finishedMessages", c)
+			ticker.Stop()
+			return
 		}
 	}()
 
 	// this blocks until finishLoop and readLoop have exited
 	c.wg.Wait()
-	close(drainExitChan)
 
 	// remove this connections RDY count from the reader's total
 	rdyCount := atomic.LoadInt64(&c.rdyCount)
@@ -1105,13 +1297,13 @@ func (q *Reader) syncHandler(handler Handler) {
 			break
 		}
 
-		finishedMessage := q.checkMessageAttempts(message.Message, handler)
+		finishedMessage := q.checkMessageAttempts(message, handler)
 		if finishedMessage != nil {
-			message.responseChannel <- finishedMessage
+			message.responseChan <- finishedMessage
 			continue
 		}
 
-		err := handler.HandleMessage(message.Message)
+		err := handler.HandleMessage(message)
 		if err != nil {
 			log.Errorf("handler returned %s for msg %s %s",
 				err.Error(), message.Id, message.Body)
@@ -1124,7 +1316,7 @@ func (q *Reader) syncHandler(handler Handler) {
 			requeueDelay = q.MaxRequeueDelay
 		}
 
-		message.responseChannel <- &FinishedMessage{
+		message.responseChan <- &FinishedMessage{
 			Id:             message.Id,
 			RequeueDelayMs: int(requeueDelay / time.Millisecond),
 			Success:        err == nil,
@@ -1155,13 +1347,13 @@ func (q *Reader) asyncHandler(handler AsyncHandler) {
 			break
 		}
 
-		finishedMessage := q.checkMessageAttempts(message.Message, handler)
+		finishedMessage := q.checkMessageAttempts(message, handler)
 		if finishedMessage != nil {
-			message.responseChannel <- finishedMessage
+			message.responseChan <- finishedMessage
 			continue
 		}
 
-		handler.HandleMessage(message.Message, message.responseChannel)
+		handler.HandleMessage(message, message.responseChan)
 	}
 }
 
