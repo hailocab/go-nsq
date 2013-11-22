@@ -20,6 +20,9 @@ import (
 	"time"
 )
 
+// returned from ConnectToLookupd when already in our list of lookupds
+var ErrLookupdAlreadyExists = errors.New("lookupd address already exists")
+
 // returned from ConnectToNSQ when already connected
 var ErrAlreadyConnected = errors.New("already connected")
 
@@ -471,7 +474,7 @@ func (q *Reader) ConnectToLookupd(addr string) error {
 	for _, x := range q.lookupdHTTPAddrs {
 		if x == addr {
 			q.Unlock()
-			return errors.New("lookupd address already exists")
+			return ErrLookupdAlreadyExists
 		}
 	}
 	q.lookupdHTTPAddrs = append(q.lookupdHTTPAddrs, addr)
