@@ -272,7 +272,7 @@ func (q *Reader) ConnectToLookupd(addr string) error {
 	for _, x := range q.lookupdHTTPAddrs {
 		if x == addr {
 			q.Unlock()
-			return ErrLookupdAddressExists
+			return ErrLookupdAlreadyExists
 		}
 	}
 	q.lookupdHTTPAddrs = append(q.lookupdHTTPAddrs, addr)
