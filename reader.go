@@ -27,7 +27,7 @@ var ErrAlreadyConnected = errors.New("already connected")
 var ErrOverMaxInFlight = errors.New("over configure max-inflight")
 
 // returned from ConnectToLookupd when given lookupd address exists already
-var ErrLookupdAddressExists = errors.New("lookupd address already exists")
+var ErrLookupdAlreadyExists = errors.New("lookupd address already exists")
 
 // Handler is the synchronous interface to Reader.
 //
@@ -490,7 +490,7 @@ func (q *Reader) ConnectToLookupd(addr string) error {
 	for _, x := range q.lookupdHTTPAddrs {
 		if x == addr {
 			q.Unlock()
-			return ErrLookupdAddressExists
+			return ErrLookupdAlreadyExists
 		}
 	}
 	q.lookupdHTTPAddrs = append(q.lookupdHTTPAddrs, addr)
