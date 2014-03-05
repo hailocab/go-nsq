@@ -196,13 +196,13 @@ func TestWriterHeartbeat(t *testing.T) {
 
 	w := NewWriter("127.0.0.1:4150")
 	defer w.Stop()
-	w.HeartbeatInterval = 1 * time.Millisecond
+	w.HeartbeatInterval = 100 * time.Millisecond
 
 	_, _, err := w.Publish(topicName, []byte("publish_test_case"))
 	if err == nil {
 		t.Fatalf("error should not be nil")
 	}
-	if err.Error() != "E_BAD_BODY IDENTIFY heartbeat interval (1) is invalid" {
+	if err.Error() != "E_BAD_BODY IDENTIFY heartbeat interval (100) is invalid" {
 		t.Fatalf("wrong error - %s", err)
 	}
 

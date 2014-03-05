@@ -20,14 +20,14 @@ import (
 	"time"
 )
 
-// returned from ConnectToLookupd when already in our list of lookupds
-var ErrLookupdAlreadyExists = errors.New("lookupd address already exists")
-
 // returned from ConnectToNSQ when already connected
 var ErrAlreadyConnected = errors.New("already connected")
 
 // returned from updateRdy if over max-in-flight
 var ErrOverMaxInFlight = errors.New("over configure max-inflight")
+
+// returned from ConnectToLookupd when given lookupd address exists already
+var ErrLookupdAddressExists = errors.New("lookupd address already exists")
 
 // Handler is the synchronous interface to Reader.
 //
@@ -122,6 +122,9 @@ type Reader struct {
 	Deflate      bool // negotiate enabling Deflate compression
 	DeflateLevel int  // the compression level to negotiate for Deflate
 	Snappy       bool // negotiate enabling Snappy compression
+
+	SampleRate int32  // set the sampleRate of the client's messagePump (requires nsqd 0.2.25+)
+	UserAgent  string // a string identifying the agent for this client in the spirit of HTTP (default: "<client_library_name>/<version>")
 
 	// internal variables
 	maxBackoffDuration   time.Duration
@@ -292,7 +295,7 @@ func (q *Reader) Configure(option string, value interface{}) error {
 			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
 		}
 		if v < 0 || v > 1 {
-			return errors.New(fmt.Sprintf("invalid %d ! 0 <= %s <= 1", option, err))
+			return errors.New(fmt.Sprintf("invalid %s ! 0 <= %d <= 1", option, v))
 		}
 		q.LookupdPollJitter = v
 	case "max_requeue_delay":
@@ -358,9 +361,20 @@ func (q *Reader) Configure(option string, value interface{}) error {
 			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
 		}
 		if v < 1 || v > 9 {
-			return errors.New(fmt.Sprintf("invalid %s ! 1 <= %d <= 9", option, err))
+			return errors.New(fmt.Sprintf("invalid %s ! 1 <= %d <= 9", option, v))
 		}
 		q.DeflateLevel = int(v)
+	case "sample_rate":
+		v, err := getInt64(value)
+		if err != nil {
+			return errors.New(fmt.Sprintf("invalid %s - %s", option, err))
+		}
+		if v < 0 || v > 99 {
+			return errors.New(fmt.Sprintf("invalid %s ! 0 <= %d <= 99", option, err))
+		}
+		q.SampleRate = int32(v)
+	case "user_agent":
+		q.UserAgent = value.(string)
 	case "snappy":
 		v, err := getBool(value)
 		if err != nil {
@@ -474,7 +488,7 @@ func (q *Reader) ConnectToLookupd(addr string) error {
 	for _, x := range q.lookupdHTTPAddrs {
 		if x == addr {
 			q.Unlock()
-			return ErrLookupdAlreadyExists
+			return ErrLookupdAddressExists
 		}
 	}
 	q.lookupdHTTPAddrs = append(q.lookupdHTTPAddrs, addr)
@@ -615,6 +629,12 @@ func (q *Reader) ConnectToNSQ(addr string) error {
 	}
 	q.pendingConnections[addr] = true
 
+	// set the user_agent string to the default if there is no user input version
+	userAgent := fmt.Sprintf("go-nsq/%s", VERSION)
+	if q.UserAgent != "" {
+		userAgent = q.UserAgent
+	}
+
 	ci := make(map[string]interface{})
 	ci["short_id"] = q.ShortIdentifier
 	ci["long_id"] = q.LongIdentifier
@@ -623,6 +643,8 @@ func (q *Reader) ConnectToNSQ(addr string) error {
 	ci["deflate_level"] = q.DeflateLevel
 	ci["snappy"] = q.Snappy
 	ci["feature_negotiation"] = true
+	ci["sample_rate"] = q.SampleRate
+	ci["user_agent"] = userAgent
 	cmd, err := Identify(ci)
 	if err != nil {
 		cleanupConnection()
@@ -648,6 +670,7 @@ func (q *Reader) ConnectToNSQ(addr string) error {
 			TLSv1       bool  `json:"tls_v1"`
 			Deflate     bool  `json:"deflate"`
 			Snappy      bool  `json:"snappy"`
+			SampleRate  int32 `json:"sample_rate"`
 		}{}
 		err := json.Unmarshal(data, &resp)
 		if err != nil {
@@ -697,6 +720,8 @@ func (q *Reader) ConnectToNSQ(addr string) error {
 		cleanupConnection()
 		return fmt.Errorf("[%s] failed to subscribe to %s:%s - %s", connection, q.TopicName, q.ChannelName, err.Error())
 	}
+
+	connection.enableReadBuffering()
 
 	q.Lock()
 	delete(q.pendingConnections, addr)
