@@ -12,7 +12,7 @@ var ErrAlreadyConnected = errors.New("already connected")
 var ErrOverMaxInFlight = errors.New("over configure max-inflight")
 
 // returned from ConnectToLookupd when given lookupd address exists already
-var ErrLookupdAddressExists = errors.New("lookupd address already exists")
+var ErrLookupdAlreadyExists = errors.New("lookupd address already exists")
 
 type ErrIdentify struct {
 	Reason string
