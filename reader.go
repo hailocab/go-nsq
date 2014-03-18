@@ -827,7 +827,7 @@ func (q *Reader) readLoop(c *nsqConn) {
 				atomic.StoreInt32(&c.stopFlag, 1)
 			case bytes.Equal(data, []byte("_heartbeat_")):
 				var buf bytes.Buffer
-				log.Debugf("[%s] heartbeat received", c)
+				log.Tracef("[%s] heartbeat received", c)
 				err := c.sendCommand(&buf, Nop())
 				if err != nil {
 					handleError(q, c, fmt.Sprintf("[%s] error sending NOP - %s",
@@ -1216,7 +1216,7 @@ func (q *Reader) redistributeRDY() {
 	q.RUnlock()
 	maxInFlight := q.MaxInFlight()
 	if numConns > maxInFlight {
-		log.Debugf("redistributing RDY state (%d conns > %d max_in_flight)",
+		log.Tracef("redistributing RDY state (%d conns > %d max_in_flight)",
 			numConns, maxInFlight)
 		atomic.StoreInt32(&q.needRDYRedistributed, 1)
 	}
@@ -1241,7 +1241,7 @@ func (q *Reader) redistributeRDY() {
 				c, rdyCount, lastMsgDuration)
 		}
 		if rdyCount > 0 && lastMsgDuration > q.LowRdyIdleTimeout {
-			log.Debugf("[%s] idle connection, giving up RDY count", c)
+			log.Tracef("[%s] idle connection, giving up RDY count", c)
 			q.updateRDY(c, 0)
 		}
 		possibleConns = append(possibleConns, c)
@@ -1258,7 +1258,7 @@ func (q *Reader) redistributeRDY() {
 		c := possibleConns[i]
 		// delete
 		possibleConns = append(possibleConns[:i], possibleConns[i+1:]...)
-		log.Debugf("[%s] redistributing RDY", c)
+		log.Tracef("[%s] redistributing RDY", c)
 		q.updateRDY(c, 1)
 	}
 	q.RUnlock()
