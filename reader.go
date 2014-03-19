@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	log "github.com/cihub/seelog"
 	"math"
 	"math/rand"
 	"net"
@@ -166,7 +166,7 @@ func NewReader(topic string, channel string) (*Reader, error) {
 
 	hostname, err := os.Hostname()
 	if err != nil {
-		log.Fatalf("ERROR: unable to get hostname %s", err.Error())
+		log.Criticalf("ERROR: unable to get hostname %s", err.Error())
 	}
 	q := &Reader{
 		TopicName:   topic,
@@ -534,7 +534,7 @@ func (q *Reader) lookupdLoop() {
 
 exit:
 	ticker.Stop()
-	log.Printf("exiting lookupdLoop")
+	log.Debugf("exiting lookupdLoop")
 }
 
 // make an HTTP req to the /lookup endpoint of one of the
@@ -550,11 +550,11 @@ func (q *Reader) queryLookupd() {
 	q.lookupdQueryIndex = (q.lookupdQueryIndex + 1) % num
 	endpoint := fmt.Sprintf("http://%s/lookup?topic=%s", addr, url.QueryEscape(q.TopicName))
 
-	log.Printf("LOOKUPD: querying %s", endpoint)
+	log.Debugf("LOOKUPD: querying %s", endpoint)
 
 	data, err := ApiRequest(endpoint)
 	if err != nil {
-		log.Printf("ERROR: lookupd %s - %s", addr, err.Error())
+		log.Errorf("lookupd %s - %s", addr, err.Error())
 		return
 	}
 
@@ -586,7 +586,7 @@ func (q *Reader) queryLookupd() {
 		joined := net.JoinHostPort(address, strconv.Itoa(port))
 		err = q.ConnectToNSQ(joined)
 		if err != nil && err != ErrAlreadyConnected {
-			log.Printf("ERROR: failed to connect to nsqd (%s) - %s", joined, err.Error())
+			log.Errorf("failed to connect to nsqd (%s) - %s", joined, err.Error())
 			continue
 		}
 	}
@@ -617,7 +617,7 @@ func (q *Reader) ConnectToNSQ(addr string) error {
 	}
 	q.RUnlock()
 
-	log.Printf("[%s] connecting to nsqd", addr)
+	log.Debugf("[%s] connecting to nsqd", addr)
 
 	connection, err := newNSQConn(q.rdyChan, addr,
 		q.TopicName, q.ChannelName, q.ReadTimeout, q.WriteTimeout)
@@ -681,16 +681,16 @@ func (q *Reader) ConnectToNSQ(addr string) error {
 			return fmt.Errorf("[%s] error (%s) unmarshaling IDENTIFY response %s", connection, err.Error(), data)
 		}
 
-		log.Printf("[%s] IDENTIFY response: %+v", connection, resp)
+		log.Debugf("[%s] IDENTIFY response: %+v", connection, resp)
 
 		connection.maxRdyCount = resp.MaxRdyCount
 		if resp.MaxRdyCount < int64(q.MaxInFlight()) {
-			log.Printf("[%s] max RDY count %d < reader max in flight %d, truncation possible",
+			log.Debugf("[%s] max RDY count %d < reader max in flight %d, truncation possible",
 				connection, resp.MaxRdyCount, q.MaxInFlight())
 		}
 
 		if resp.TLSv1 {
-			log.Printf("[%s] upgrading to TLS", connection)
+			log.Debugf("[%s] upgrading to TLS", connection)
 			err := connection.upgradeTLS(q.TLSConfig)
 			if err != nil {
 				cleanupConnection()
@@ -699,7 +699,7 @@ func (q *Reader) ConnectToNSQ(addr string) error {
 		}
 
 		if resp.Deflate {
-			log.Printf("[%s] upgrading to Deflate", connection)
+			log.Debugf("[%s] upgrading to Deflate", connection)
 			err := connection.upgradeDeflate(q.DeflateLevel)
 			if err != nil {
 				connection.Close()
@@ -708,7 +708,7 @@ func (q *Reader) ConnectToNSQ(addr string) error {
 		}
 
 		if resp.Snappy {
-			log.Printf("[%s] upgrading to Snappy", connection)
+			log.Debugf("[%s] upgrading to Snappy", connection)
 			err := connection.upgradeSnappy()
 			if err != nil {
 				connection.Close()
@@ -746,7 +746,7 @@ func (q *Reader) ConnectToNSQ(addr string) error {
 }
 
 func handleError(q *Reader, c *nsqConn, errMsg string) {
-	log.Printf(errMsg)
+	log.Debugf(errMsg)
 	atomic.StoreInt32(&c.stopFlag, 1)
 
 	q.RLock()
@@ -755,14 +755,14 @@ func handleError(q *Reader, c *nsqConn, errMsg string) {
 	if numLookupd == 0 {
 		go func(addr string) {
 			for {
-				log.Printf("[%s] re-connecting in 15 seconds...", addr)
+				log.Debugf("[%s] re-connecting in 15 seconds...", addr)
 				time.Sleep(15 * time.Second)
 				if atomic.LoadInt32(&q.stopFlag) == 1 {
 					break
 				}
 				err := q.ConnectToNSQ(addr)
 				if err != nil && err != ErrAlreadyConnected {
-					log.Printf("ERROR: failed to connect to %s - %s",
+					log.Errorf("failed to connect to %s - %s",
 						addr, err.Error())
 					continue
 				}
@@ -779,7 +779,7 @@ func (q *Reader) readLoop(c *nsqConn) {
 			if atomic.LoadInt64(&c.messagesInFlight) == 0 {
 				q.stopFinishLoop(c)
 			} else {
-				log.Printf("[%s] delaying close, %d outstanding messages",
+				log.Debugf("[%s] delaying close, %d outstanding messages",
 					c, c.messagesInFlight)
 			}
 			goto exit
@@ -813,7 +813,7 @@ func (q *Reader) readLoop(c *nsqConn) {
 			atomic.StoreInt64(&c.lastMsgTimestamp, time.Now().UnixNano())
 
 			if q.VerboseLogging {
-				log.Printf("[%s] (remain %d) FrameTypeMessage: %s - %s",
+				log.Debugf("[%s] (remain %d) FrameTypeMessage: %s - %s",
 					c, remain, msg.Id, msg.Body)
 			}
 
@@ -825,11 +825,11 @@ func (q *Reader) readLoop(c *nsqConn) {
 				// server is ready for us to close (it ack'd our StartClose)
 				// we can assume we will not receive any more messages over this channel
 				// (but we can still write back responses)
-				log.Printf("[%s] received ACK from nsqd - now in CLOSE_WAIT", c)
+				log.Debugf("[%s] received ACK from nsqd - now in CLOSE_WAIT", c)
 				atomic.StoreInt32(&c.stopFlag, 1)
 			case bytes.Equal(data, []byte("_heartbeat_")):
 				var buf bytes.Buffer
-				log.Printf("[%s] heartbeat received", c)
+				log.Debugf("[%s] heartbeat received", c)
 				err := c.sendCommand(&buf, Nop())
 				if err != nil {
 					handleError(q, c, fmt.Sprintf("[%s] error sending NOP - %s",
@@ -838,15 +838,15 @@ func (q *Reader) readLoop(c *nsqConn) {
 				}
 			}
 		case FrameTypeError:
-			log.Printf("[%s] error from nsqd %s", c, data)
+			log.Debugf("[%s] error from nsqd %s", c, data)
 		default:
-			log.Printf("[%s] unknown message type %d", c, frameType)
+			log.Debugf("[%s] unknown message type %d", c, frameType)
 		}
 	}
 
 exit:
 	c.wg.Done()
-	log.Printf("[%s] readLoop exiting", c)
+	log.Debugf("[%s] readLoop exiting", c)
 }
 
 func (q *Reader) finishLoop(c *nsqConn) {
@@ -855,14 +855,14 @@ func (q *Reader) finishLoop(c *nsqConn) {
 	for {
 		select {
 		case <-c.exitChan:
-			log.Printf("[%s] breaking out of finish loop", c)
+			log.Debugf("[%s] breaking out of finish loop", c)
 			// Indicate drainReady because we will not pull any more off finishedMessages
 			close(c.drainReady)
 			goto exit
 		case cmd := <-c.cmdChan:
 			err := c.sendCommand(&buf, cmd)
 			if err != nil {
-				log.Printf("[%s] error sending command %s - %s", c, cmd, err)
+				log.Debugf("[%s] error sending command %s - %s", c, cmd, err)
 				q.stopFinishLoop(c)
 				continue
 			}
@@ -873,12 +873,12 @@ func (q *Reader) finishLoop(c *nsqConn) {
 
 			if msg.Success {
 				if q.VerboseLogging {
-					log.Printf("[%s] finishing %s", c, msg.Id)
+					log.Debugf("[%s] finishing %s", c, msg.Id)
 				}
 
 				err := c.sendCommand(&buf, Finish(msg.Id))
 				if err != nil {
-					log.Printf("[%s] error finishing %s - %s", c, msg.Id, err.Error())
+					log.Debugf("[%s] error finishing %s - %s", c, msg.Id, err.Error())
 					q.stopFinishLoop(c)
 					continue
 				}
@@ -887,12 +887,12 @@ func (q *Reader) finishLoop(c *nsqConn) {
 				atomic.AddUint64(&q.MessagesFinished, 1)
 			} else {
 				if q.VerboseLogging {
-					log.Printf("[%s] requeuing %s", c, msg.Id)
+					log.Debugf("[%s] requeuing %s", c, msg.Id)
 				}
 
 				err := c.sendCommand(&buf, Requeue(msg.Id, msg.RequeueDelayMs))
 				if err != nil {
-					log.Printf("[%s] error requeueing %s - %s", c, msg.Id, err.Error())
+					log.Debugf("[%s] error requeueing %s - %s", c, msg.Id, err.Error())
 					q.stopFinishLoop(c)
 					continue
 				}
@@ -913,12 +913,12 @@ func (q *Reader) finishLoop(c *nsqConn) {
 
 exit:
 	c.wg.Done()
-	log.Printf("[%s] finishLoop exiting", c)
+	log.Debugf("[%s] finishLoop exiting", c)
 }
 
 func (q *Reader) stopFinishLoop(c *nsqConn) {
 	c.stopper.Do(func() {
-		log.Printf("[%s] beginning stopFinishLoop", c)
+		log.Debugf("[%s] beginning stopFinishLoop", c)
 		close(c.exitChan)
 		c.Close()
 		go q.cleanupConnection(c)
@@ -946,10 +946,10 @@ func (q *Reader) cleanupConnection(c *nsqConn) {
 				msgsInFlight = atomic.LoadInt64(&c.messagesInFlight)
 			}
 			if msgsInFlight > 0 {
-				log.Printf("[%s] draining... waiting for %d messages in flight", c, msgsInFlight)
+				log.Debugf("[%s] draining... waiting for %d messages in flight", c, msgsInFlight)
 				continue
 			}
-			log.Printf("[%s] done draining finishedMessages", c)
+			log.Debugf("[%s] done draining finishedMessages", c)
 			ticker.Stop()
 			return
 		}
@@ -976,7 +976,7 @@ func (q *Reader) cleanupConnection(c *nsqConn) {
 	left := len(q.nsqConnections)
 	q.Unlock()
 
-	log.Printf("there are %d connections left alive", left)
+	log.Debugf("there are %d connections left alive", left)
 
 	if (hasRDYRetryTimer || rdyCount > 0) &&
 		(left == q.MaxInFlight() || q.inBackoff()) {
@@ -1048,7 +1048,7 @@ func (q *Reader) rdyLoop() {
 			q.RUnlock()
 
 			if choice != nil {
-				log.Printf("[%s] backoff time expired, continuing with RDY 1...", choice)
+				log.Debugf("[%s] backoff time expired, continuing with RDY 1...", choice)
 				// while in backoff only ever let 1 message at a time through
 				q.updateRDY(choice, 1)
 			}
@@ -1068,13 +1068,13 @@ func (q *Reader) rdyLoop() {
 			// refill when at 1, or at 25%, or if connections have changed and we have too many RDY
 			if remain <= 1 || remain < (lastRdyCount/4) || (count > 0 && count < remain) {
 				if q.VerboseLogging {
-					log.Printf("[%s] sending RDY %d (%d remain from last RDY %d)",
+					log.Debugf("[%s] sending RDY %d (%d remain from last RDY %d)",
 						c, count, remain, lastRdyCount)
 				}
 				q.updateRDY(c, count)
 			} else {
 				if q.VerboseLogging {
-					log.Printf("[%s] skip sending RDY %d (%d remain out of last RDY %d)",
+					log.Debugf("[%s] skip sending RDY %d (%d remain out of last RDY %d)",
 						c, count, remain, lastRdyCount)
 				}
 			}
@@ -1110,7 +1110,7 @@ func (q *Reader) rdyLoop() {
 				q.RLock()
 				for _, c := range q.nsqConnections {
 					if q.VerboseLogging {
-						log.Printf("[%s] exiting backoff. returning to RDY %d", c, count)
+						log.Debugf("[%s] exiting backoff. returning to RDY %d", c, count)
 					}
 					q.updateRDY(c, count)
 				}
@@ -1125,14 +1125,14 @@ func (q *Reader) rdyLoop() {
 				backoffTimer = time.NewTimer(backoffDuration)
 				backoffTimerChan = backoffTimer.C
 
-				log.Printf("backing off for %.04f seconds (backoff level %d)",
+				log.Debugf("backing off for %.04f seconds (backoff level %d)",
 					backoffDuration.Seconds(), backoffCounter)
 
 				// send RDY 0 immediately (to *all* connections)
 				q.RLock()
 				for _, c := range q.nsqConnections {
 					if q.VerboseLogging {
-						log.Printf("[%s] in backoff. sending RDY 0", c)
+						log.Debugf("[%s] in backoff. sending RDY 0", c)
 					}
 					q.updateRDY(c, 0)
 				}
@@ -1150,7 +1150,7 @@ exit:
 	if backoffTimer != nil {
 		backoffTimer.Stop()
 	}
-	log.Printf("rdyLoop exiting")
+	log.Debugf("rdyLoop exiting")
 }
 
 func (q *Reader) updateRDY(c *nsqConn, count int64) error {
@@ -1225,13 +1225,13 @@ func (q *Reader) redistributeRDY() {
 	q.RUnlock()
 	maxInFlight := q.MaxInFlight()
 	if numConns > maxInFlight {
-		log.Printf("redistributing RDY state (%d conns > %d max_in_flight)",
+		log.Debugf("redistributing RDY state (%d conns > %d max_in_flight)",
 			numConns, maxInFlight)
 		atomic.StoreInt32(&q.needRDYRedistributed, 1)
 	}
 
 	if q.inBackoff() && numConns > 1 {
-		log.Printf("redistributing RDY state (in backoff and %d conns > 1)", numConns)
+		log.Debugf("redistributing RDY state (in backoff and %d conns > 1)", numConns)
 		atomic.StoreInt32(&q.needRDYRedistributed, 1)
 	}
 
@@ -1246,11 +1246,11 @@ func (q *Reader) redistributeRDY() {
 		lastMsgDuration := time.Now().Sub(time.Unix(0, lastMsgTimestamp))
 		rdyCount := atomic.LoadInt64(&c.rdyCount)
 		if q.VerboseLogging {
-			log.Printf("[%s] rdy: %d (last message received %s)",
+			log.Debugf("[%s] rdy: %d (last message received %s)",
 				c, rdyCount, lastMsgDuration)
 		}
 		if rdyCount > 0 && lastMsgDuration > q.LowRdyIdleTimeout {
-			log.Printf("[%s] idle connection, giving up RDY count", c)
+			log.Debugf("[%s] idle connection, giving up RDY count", c)
 			q.updateRDY(c, 0)
 		}
 		possibleConns = append(possibleConns, c)
@@ -1267,7 +1267,7 @@ func (q *Reader) redistributeRDY() {
 		c := possibleConns[i]
 		// delete
 		possibleConns = append(possibleConns[:i], possibleConns[i+1:]...)
-		log.Printf("[%s] redistributing RDY", c)
+		log.Debugf("[%s] redistributing RDY", c)
 		q.updateRDY(c, 1)
 	}
 	q.RUnlock()
@@ -1281,7 +1281,7 @@ func (q *Reader) Stop() {
 		return
 	}
 
-	log.Printf("stopping reader")
+	log.Debugf("stopping reader")
 
 	q.RLock()
 	l := len(q.nsqConnections)
@@ -1294,7 +1294,7 @@ func (q *Reader) Stop() {
 		for _, c := range q.nsqConnections {
 			err := c.sendCommand(&buf, StartClose())
 			if err != nil {
-				log.Printf("[%s] failed to start close - %s", c, err.Error())
+				log.Debugf("[%s] failed to start close - %s", c, err.Error())
 			}
 		}
 		q.RUnlock()
@@ -1307,7 +1307,7 @@ func (q *Reader) Stop() {
 
 func (q *Reader) stopHandlers() {
 	q.stopHandler.Do(func() {
-		log.Printf("stopping handlers")
+		log.Debugf("stopping handlers")
 		close(q.incomingMessages)
 	})
 }
@@ -1324,11 +1324,11 @@ func (q *Reader) AddHandler(handler Handler) {
 }
 
 func (q *Reader) syncHandler(handler Handler) {
-	log.Println("Handler starting")
+	log.Debug("Handler starting")
 	for {
 		message, ok := <-q.incomingMessages
 		if !ok {
-			log.Printf("Handler closing")
+			log.Debugf("Handler closing")
 			if atomic.AddInt32(&q.runningHandlers, -1) == 0 {
 				close(q.ExitChan)
 			}
@@ -1343,7 +1343,7 @@ func (q *Reader) syncHandler(handler Handler) {
 
 		err := handler.HandleMessage(message)
 		if err != nil {
-			log.Printf("ERROR: handler returned %s for msg %s %s",
+			log.Errorf("handler returned %s for msg %s %s",
 				err.Error(), message.Id, message.Body)
 		}
 
@@ -1374,11 +1374,11 @@ func (q *Reader) AddAsyncHandler(handler AsyncHandler) {
 }
 
 func (q *Reader) asyncHandler(handler AsyncHandler) {
-	log.Println("AsyncHandler starting")
+	log.Debug("AsyncHandler starting")
 	for {
 		message, ok := <-q.incomingMessages
 		if !ok {
-			log.Printf("AsyncHandler closing")
+			log.Debugf("AsyncHandler closing")
 			if atomic.AddInt32(&q.runningHandlers, -1) == 0 {
 				close(q.ExitChan)
 			}
@@ -1398,7 +1398,7 @@ func (q *Reader) asyncHandler(handler AsyncHandler) {
 func (q *Reader) checkMessageAttempts(message *Message, handler interface{}) *FinishedMessage {
 	// message passed the max number of attempts
 	if q.MaxAttemptCount > 0 && message.Attempts > q.MaxAttemptCount {
-		log.Printf("WARNING: msg attempted %d times. giving up %s %s",
+		log.Debugf("WARNING: msg attempted %d times. giving up %s %s",
 			message.Attempts, message.Id, message.Body)
 
 		logger, ok := handler.(FailedMessageLogger)
