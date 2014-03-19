@@ -3,10 +3,11 @@ package nsq
 import (
 	"crypto/tls"
 	"errors"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	log "github.com/cihub/seelog"
 )
 
 // Writer is a high-level type to publish to NSQ.
@@ -205,7 +206,7 @@ func (w *Writer) connect() error {
 		return ErrNotConnected
 	}
 
-	log.Printf("[%s] connecting...", w)
+	log.Debugf("[%s] connecting...", w)
 
 	conn := NewConn(w.Addr, "", "")
 	if w.ReadTimeout > 0 {
@@ -263,21 +264,21 @@ func (w *Writer) connect() error {
 	resp, err := conn.Connect()
 	if err != nil {
 		conn.Close()
-		log.Printf("ERROR: [%s] failed to IDENTIFY - %s", w, err)
+		log.Errorf("[%s] failed to IDENTIFY - %s", w, err)
 		atomic.StoreInt32(&w.state, StateInit)
 		return err
 	}
 
 	if resp != nil {
-		log.Printf("[%s] IDENTIFY response: %+v", w, resp)
+		log.Debugf("[%s] IDENTIFY response: %+v", w, resp)
 		if resp.TLSv1 {
-			log.Printf("[%s] upgrading to TLS", w)
+			log.Debugf("[%s] upgrading to TLS", w)
 		}
 		if resp.Deflate {
-			log.Printf("[%s] upgrading to Deflate", w)
+			log.Debugf("[%s] upgrading to Deflate", w)
 		}
 		if resp.Snappy {
-			log.Printf("[%s] upgrading to Snappy", w)
+			log.Debugf("[%s] upgrading to Snappy", w)
 		}
 	}
 
@@ -309,7 +310,7 @@ func (w *Writer) router() {
 			w.transactions = append(w.transactions, t)
 			err := w.conn.SendCommand(t.cmd)
 			if err != nil {
-				log.Printf("ERROR: [%s] failed writing %s", w, err)
+				log.Errorf("[%s] failed writing %s", w, err)
 				w.close()
 			}
 		case data := <-w.responseChan:
@@ -317,9 +318,9 @@ func (w *Writer) router() {
 		case data := <-w.errorChan:
 			w.popTransaction(FrameTypeError, data)
 		case <-w.heartbeatChan:
-			log.Printf("[%s] heartbeat received", w)
+			log.Debugf("[%s] heartbeat received", w)
 		case err := <-w.ioErrorChan:
-			log.Printf("ERROR: [%s] %s", w, err)
+			log.Errorf("[%s] %s", w, err)
 			w.close()
 		case <-w.closeChan:
 			goto exit
@@ -331,7 +332,7 @@ func (w *Writer) router() {
 exit:
 	w.transactionCleanup()
 	w.wg.Done()
-	log.Printf("[%s] exiting messageRouter()", w)
+	log.Debugf("[%s] exiting messageRouter()", w)
 }
 
 func (w *Writer) popTransaction(frameType int32, data []byte) {
