@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	log "github.com/cihub/seelog"
 	"github.com/mreiferson/go-snappystream"
 )
 
@@ -127,7 +127,7 @@ type Conn struct {
 func NewConn(addr string, topic string, channel string) *Conn {
 	hostname, err := os.Hostname()
 	if err != nil {
-		log.Fatalf("ERROR: unable to get hostname %s", err.Error())
+		log.Criticalf("unable to get hostname %s", err.Error())
 	}
 	return &Conn{
 		addr: addr,
@@ -482,25 +482,25 @@ exit:
 		// writeLoop won't
 		c.close()
 	} else {
-		log.Printf("[%s] delaying close, %d outstanding messages",
+		log.Debugf("[%s] delaying close, %d outstanding messages",
 			c, messagesInFlight)
 	}
 	c.wg.Done()
-	log.Printf("[%s] readLoop exiting", c)
+	log.Debugf("[%s] readLoop exiting", c)
 }
 
 func (c *Conn) writeLoop() {
 	for {
 		select {
 		case <-c.exitChan:
-			log.Printf("[%s] breaking out of writeLoop", c)
+			log.Debugf("[%s] breaking out of writeLoop", c)
 			// Indicate drainReady because we will not pull any more off finishedMessages
 			close(c.drainReady)
 			goto exit
 		case cmd := <-c.cmdChan:
 			err := c.SendCommand(cmd)
 			if err != nil {
-				log.Printf("[%s] error sending command %s - %s", c, cmd, err)
+				log.Errorf("[%s] error sending command %s - %s", c, cmd, err)
 				c.close()
 				continue
 			}
@@ -511,14 +511,14 @@ func (c *Conn) writeLoop() {
 			if finishedMsg.Success {
 				err := c.SendCommand(Finish(finishedMsg.Id))
 				if err != nil {
-					log.Printf("[%s] error finishing %s - %s", c, finishedMsg.Id, err.Error())
+					log.Errorf("[%s] error finishing %s - %s", c, finishedMsg.Id, err.Error())
 					c.close()
 					continue
 				}
 			} else {
 				err := c.SendCommand(Requeue(finishedMsg.Id, finishedMsg.RequeueDelayMs))
 				if err != nil {
-					log.Printf("[%s] error requeueing %s - %s", c, finishedMsg.Id, err.Error())
+					log.Errorf("[%s] error requeueing %s - %s", c, finishedMsg.Id, err.Error())
 					c.close()
 					continue
 				}
@@ -535,7 +535,7 @@ func (c *Conn) writeLoop() {
 
 exit:
 	c.wg.Done()
-	log.Printf("[%s] writeLoop exiting", c)
+	log.Debugf("[%s] writeLoop exiting", c)
 }
 
 func (c *Conn) close() {
@@ -565,7 +565,7 @@ func (c *Conn) close() {
 	//         d. trigger CloseCB()
 	//
 	c.stopper.Do(func() {
-		log.Printf("[%s] beginning close", c)
+		log.Debugf("[%s] beginning close", c)
 		close(c.exitChan)
 
 		c.wg.Add(1)
@@ -595,13 +595,13 @@ func (c *Conn) cleanup() {
 			msgsInFlight = atomic.LoadInt64(&c.messagesInFlight)
 		}
 		if msgsInFlight > 0 {
-			log.Printf("[%s] draining... waiting for %d messages in flight", c, msgsInFlight)
+			log.Debugf("[%s] draining... waiting for %d messages in flight", c, msgsInFlight)
 			continue
 		}
 		// until the readLoop has exited we cannot be sure that there
 		// still won't be a race
 		if atomic.LoadInt32(&c.readLoopRunning) == 1 {
-			log.Printf("[%s] draining... readLoop still running", c)
+			log.Debugf("[%s] draining... readLoop still running", c)
 			continue
 		}
 		goto exit
@@ -610,7 +610,7 @@ func (c *Conn) cleanup() {
 exit:
 	ticker.Stop()
 	c.wg.Done()
-	log.Printf("[%s] finished draining, cleanup exiting", c)
+	log.Debugf("[%s] finished draining, cleanup exiting", c)
 }
 
 func (c *Conn) waitForCleanup() {
@@ -619,6 +619,6 @@ func (c *Conn) waitForCleanup() {
 	c.wg.Wait()
 	// actually close the underlying connection
 	c.Close()
-	log.Printf("[%s] clean close complete", c)
+	log.Debugf("[%s] clean close complete", c)
 	c.CloseCB(c)
 }
