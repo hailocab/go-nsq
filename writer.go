@@ -371,3 +371,10 @@ func (w *Writer) transactionCleanup() {
 		}
 	}
 }
+
+// to maintain the API existing hailo services expect
+// but should always have been calling Stop()
+func (w *Writer) Close() error {
+	w.Stop()
+	return nil
+}
