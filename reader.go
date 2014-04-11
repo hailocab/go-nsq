@@ -545,7 +545,7 @@ func (q *Reader) onConnectionResponse(c *Conn, data []byte) {
 }
 
 func (q *Reader) onConnectionError(c *Conn, data []byte) {
-	log.Debugf("[%s] error from nsqd %s", c, data)
+	log.Errorf("[%s] error from nsqd %s", c, data)
 }
 
 func (q *Reader) onConnectionHeartbeat(c *Conn) {
@@ -553,7 +553,7 @@ func (q *Reader) onConnectionHeartbeat(c *Conn) {
 }
 
 func (q *Reader) onConnectionIOError(c *Conn, err error) {
-	log.Debugf("[%s] IO Error - %s", c, err)
+	log.Errorf("[%s] IO Error - %s", c, err)
 	c.Stop()
 }
 
@@ -850,7 +850,7 @@ func (q *Reader) redistributeRDY() {
 	}
 
 	if q.inBackoff() && numConns > 1 {
-		log.Debugf("redistributing RDY state (in backoff and %d conns > 1)", numConns)
+		log.Tracef("redistributing RDY state (in backoff and %d conns > 1)", numConns)
 		atomic.StoreInt32(&q.needRDYRedistributed, 1)
 	}
 
