@@ -227,7 +227,7 @@ func (q *Reader) IsStarved() bool {
 		threshold := int64(float64(atomic.LoadInt64(&conn.lastRdyCount)) * 0.85)
 		inFlight := atomic.LoadInt64(&conn.messagesInFlight)
 		log.Infof("[NSQ] In Flight: %s", inFlight)
-		log.Infof("[NSQ] Threshold: %s", inFlight)
+		log.Infof("[NSQ] Threshold: %s", threshold)
 		log.Infof("[NSQ] Stop Flag: %s", atomic.LoadInt32(&conn.stopFlag))
 		if inFlight >= threshold && inFlight > 0 && atomic.LoadInt32(&conn.stopFlag) != 1 {
 			return true
