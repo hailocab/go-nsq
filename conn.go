@@ -17,7 +17,7 @@ import (
 	"time"
 
 	log "github.com/cihub/seelog"
-	"github.com/hailocab/go-snappystream"
+	"github.com/mreiferson/go-snappystream"
 )
 
 // IdentifyResponse represents the metadata
