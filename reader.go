@@ -463,7 +463,7 @@ func (q *Reader) ConnectToNSQ(addr string) error {
 		q.onConnectionIOError(c, err)
 	}
 	conn.CloseCB = func(c *Conn) {
-		q.onConnectionClosed(c)
+		q.onConnectionClosed(c, true)
 	}
 
 	cleanupConnection := func() {
@@ -519,6 +519,54 @@ func (q *Reader) ConnectToNSQ(addr string) error {
 	return nil
 }
 
+func (q *Reader) DisconnectFromLookupd(addr string) error {
+	var addrs []string
+	var seen bool
+
+	q.Lock()
+
+	for _, x := range q.lookupdHTTPAddrs {
+		if x == addr {
+			seen = true
+			continue
+		}
+		addrs = append(addrs, x)
+	}
+
+	if seen {
+		q.lookupdHTTPAddrs = addrs
+		num := len(q.lookupdHTTPAddrs)
+		q.lookupdQueryIndex = (q.lookupdQueryIndex + 1) % num
+	}
+
+	q.Unlock()
+
+	return nil
+}
+
+func (q *Reader) DisconnectFromNSQ(addr string) error {
+	q.Lock()
+
+	c, ok := q.connections[addr]
+	_, pOk := q.pendingConnections[addr]
+
+	if ok {
+		c.CloseCB = func(c *Conn) {
+			q.onConnectionClosed(c, false)
+		}
+		c.Stop()
+		delete(q.connections, addr)
+	}
+
+	if pOk {
+		delete(q.pendingConnections, addr)
+	}
+
+	q.Unlock()
+
+	return nil
+}
+
 func (q *Reader) onConnectionMessage(c *Conn, msg *Message) {
 	atomic.AddInt64(&q.totalRdyCount, -1)
 	atomic.AddUint64(&q.MessagesReceived, 1)
@@ -565,7 +613,7 @@ func (q *Reader) onConnectionIOError(c *Conn, err error) {
 	c.Stop()
 }
 
-func (q *Reader) onConnectionClosed(c *Conn) {
+func (q *Reader) onConnectionClosed(c *Conn, reconnect bool) {
 	var hasRDYRetryTimer bool
 
 	// remove this connections RDY count from the reader's total
@@ -615,6 +663,10 @@ func (q *Reader) onConnectionClosed(c *Conn) {
 		}
 	} else if numLookupd == 0 && atomic.LoadInt32(&q.stopFlag) == 0 {
 		// there are no lookupd, try to reconnect after a bit
+		if !reconnect {
+			return
+		}
+
 		go func(addr string) {
 			for {
 				log.Debugf("[%s] re-connecting in 15 seconds...", addr)
