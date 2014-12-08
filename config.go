@@ -469,7 +469,6 @@ func coerceString(v interface{}) (string, error) {
 	default:
 		return fmt.Sprintf("%s", v), nil
 	}
-	return "", errors.New("invalid value type")
 }
 
 func coerceDuration(v interface{}) (time.Duration, error) {
