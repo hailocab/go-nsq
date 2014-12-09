@@ -15,8 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mreiferson/go-snappystream"
 	clog "github.com/cihub/seelog"
+	"github.com/mreiferson/go-snappystream"
 )
 
 // IdentifyResponse represents the metadata
