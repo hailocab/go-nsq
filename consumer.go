@@ -15,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	clog "github.com/cihub/seelog"
 )
 
 // Handler is the message processing interface for Consumer
@@ -323,7 +325,7 @@ func (r *Consumer) lookupdLoop() {
 
 exit:
 	ticker.Stop()
-	r.log(LogLevelInfo, "exiting lookupdLoop")
+	clog.Info("exiting lookupdLoop")
 	r.wg.Done()
 }
 
@@ -362,11 +364,11 @@ func (r *Consumer) nextLookupdEndpoint() string {
 func (r *Consumer) queryLookupd() {
 	endpoint := r.nextLookupdEndpoint()
 
-	r.log(LogLevelInfo, "querying nsqlookupd %s", endpoint)
+	clog.Infof("querying nsqlookupd %s", endpoint)
 
 	data, err := apiRequestNegotiateV1("GET", endpoint, nil)
 	if err != nil {
-		r.log(LogLevelError, "error querying nsqlookupd (%s) - %s", endpoint, err)
+		clog.Errorf("error querying nsqlookupd (%s) - %s", endpoint, err)
 		return
 	}
 
@@ -390,7 +392,7 @@ func (r *Consumer) queryLookupd() {
 		joined := net.JoinHostPort(broadcastAddress, strconv.Itoa(port))
 		err = r.ConnectToNSQD(joined)
 		if err != nil && err != ErrAlreadyConnected {
-			r.log(LogLevelError, "(%s) error connecting to nsqd - %s", joined, err)
+			clog.Errorf("(%s) error connecting to nsqd - %s", joined, err)
 			continue
 		}
 	}
@@ -435,7 +437,7 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 		return ErrAlreadyConnected
 	}
 
-	r.log(LogLevelInfo, "(%s) connecting to nsqd", addr)
+	clog.Infof("(%s) connecting to nsqd", addr)
 
 	conn := NewConn(addr, &r.config, &consumerConnDelegate{r})
 	conn.SetLogger(r.logger, r.logLvl,
@@ -458,8 +460,7 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 
 	if resp != nil {
 		if resp.MaxRdyCount < int64(r.getMaxInFlight()) {
-			r.log(LogLevelWarning,
-				"(%s) max RDY count %d < consumer max in flight %d, truncation possible",
+			clog.Debugf("(%s) max RDY count %d < consumer max in flight %d, truncation possible",
 				conn.String(), resp.MaxRdyCount, r.getMaxInFlight())
 		}
 	}
@@ -537,7 +538,7 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, success bool) {
 	if r.backoffCounter == 0 && backoffUpdated {
 		// exit backoff
 		count := r.perConnMaxInFlight()
-		r.log(LogLevelWarning, "exiting backoff, returning all to RDY %d", count)
+		clog.Debugf("exiting backoff, returning all to RDY %d", count)
 		for _, c := range r.conns() {
 			r.updateRDY(c, count)
 		}
@@ -565,14 +566,12 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, success bool) {
 				i++
 			}
 
-			r.log(LogLevelWarning,
-				"(%s) backoff timeout expired, sending RDY 1",
-				choice.String())
+			clog.Debugf("(%s) backoff timeout expired, sending RDY 1", choice.String())
 			// while in backoff only ever let 1 message at a time through
 			r.updateRDY(choice, 1)
 		})
 
-		r.log(LogLevelWarning, "backing off for %.04f seconds (backoff level %d), setting all to RDY 0",
+		clog.Debugf("backing off for %.04f seconds (backoff level %d), setting all to RDY 0",
 			backoffDuration.Seconds(), r.backoffCounter)
 
 		// send RDY 0 immediately (to *all* connections)
@@ -588,7 +587,7 @@ func (r *Consumer) onConnResponse(c *Conn, data []byte) {
 		// server is ready for us to close (it ack'd our StartClose)
 		// we can assume we will not receive any more messages over this channel
 		// (but we can still write back responses)
-		r.log(LogLevelInfo, "(%s) received CLOSE_WAIT from nsqd", c.String())
+		clog.Debugf("(%s) received CLOSE_WAIT from nsqd", c.String())
 		c.Close()
 	}
 }
@@ -622,7 +621,7 @@ func (r *Consumer) onConnClose(c *Conn) {
 	left := len(r.connections)
 	r.mtx.Unlock()
 
-	r.log(LogLevelWarning, "there are %d connections left alive", left)
+	clog.Debugf("there are %d connections left alive", left)
 
 	if (hasRDYRetryTimer || rdyCount > 0) &&
 		(int32(left) == r.getMaxInFlight() || r.inBackoff()) {
@@ -653,14 +652,14 @@ func (r *Consumer) onConnClose(c *Conn) {
 		// there are no lookupd, try to reconnect after a bit
 		go func(addr string) {
 			for {
-				r.log(LogLevelInfo, "(%s) re-connecting in 15 seconds...", addr)
+				clog.Debugf("(%s) re-connecting in 15 seconds...", addr)
 				time.Sleep(15 * time.Second)
 				if atomic.LoadInt32(&r.stopFlag) == 1 {
 					break
 				}
 				err := r.ConnectToNSQD(addr)
 				if err != nil && err != ErrAlreadyConnected {
-					r.log(LogLevelError, "(%s) error connecting to nsqd - %s", addr, err)
+					clog.Errorf("(%s) error connecting to nsqd - %s", addr, err)
 					continue
 				}
 				break
@@ -700,11 +699,11 @@ func (r *Consumer) maybeUpdateRDY(conn *Conn) {
 
 	// refill when at 1, or at 25%, or if connections have changed and we're imbalanced
 	if remain <= 1 || remain < (lastRdyCount/4) || (count > 0 && count < remain) {
-		r.log(LogLevelDebug, "(%s) sending RDY %d (%d remain from last RDY %d)",
+		clog.Tracef("(%s) sending RDY %d (%d remain from last RDY %d)",
 			conn, count, remain, lastRdyCount)
 		r.updateRDY(conn, count)
 	} else {
-		r.log(LogLevelDebug, "(%s) skip sending RDY %d (%d remain out of last RDY %d)",
+		clog.Tracef("(%s) skip sending RDY %d (%d remain out of last RDY %d)",
 			conn, count, remain, lastRdyCount)
 	}
 }
@@ -723,7 +722,7 @@ func (r *Consumer) rdyLoop() {
 
 exit:
 	redistributeTicker.Stop()
-	r.log(LogLevelInfo, "rdyLoop exiting")
+	clog.Info("rdyLoop exiting")
 	r.wg.Done()
 }
 
@@ -780,7 +779,7 @@ func (r *Consumer) sendRDY(c *Conn, count int64) error {
 	c.SetRDY(count)
 	err := c.WriteCommand(Ready(int(count)))
 	if err != nil {
-		r.log(LogLevelError, "(%s) error sending RDY %d - %s", c.String(), count, err)
+		clog.Errorf("(%s) error sending RDY %d - %s", c.String(), count, err)
 		return err
 	}
 	return nil
@@ -794,13 +793,13 @@ func (r *Consumer) redistributeRDY() {
 	numConns := int32(len(r.conns()))
 	maxInFlight := r.getMaxInFlight()
 	if numConns > maxInFlight {
-		r.log(LogLevelDebug, "redistributing RDY state (%d conns > %d max_in_flight)",
+		clog.Tracef("redistributing RDY state (%d conns > %d max_in_flight)",
 			numConns, maxInFlight)
 		atomic.StoreInt32(&r.needRDYRedistributed, 1)
 	}
 
 	if r.inBackoff() && numConns > 1 {
-		r.log(LogLevelDebug, "redistributing RDY state (in backoff and %d conns > 1)", numConns)
+		clog.Tracef("redistributing RDY state (in backoff and %d conns > 1)", numConns)
 		atomic.StoreInt32(&r.needRDYRedistributed, 1)
 	}
 
@@ -813,10 +812,10 @@ func (r *Consumer) redistributeRDY() {
 	for _, c := range conns {
 		lastMsgDuration := time.Now().Sub(c.LastMessageTime())
 		rdyCount := c.RDY()
-		r.log(LogLevelDebug, "(%s) rdy: %d (last message received %s)",
+		clog.Debugf("(%s) rdy: %d (last message received %s)",
 			c.String(), rdyCount, lastMsgDuration)
 		if rdyCount > 0 && lastMsgDuration > r.config.LowRdyIdleTimeout {
-			r.log(LogLevelDebug, "(%s) idle connection, giving up RDY", c.String())
+			clog.Tracef("(%s) idle connection, giving up RDY", c.String())
 			r.updateRDY(c, 0)
 		}
 		possibleConns = append(possibleConns, c)
@@ -833,7 +832,7 @@ func (r *Consumer) redistributeRDY() {
 		c := possibleConns[i]
 		// delete
 		possibleConns = append(possibleConns[:i], possibleConns[i+1:]...)
-		r.log(LogLevelDebug, "(%s) redistributing RDY", c.String())
+		clog.Tracef("(%s) redistributing RDY", c.String())
 		r.updateRDY(c, 1)
 	}
 }
@@ -846,7 +845,7 @@ func (r *Consumer) Stop() {
 		return
 	}
 
-	r.log(LogLevelInfo, "stopping...")
+	clog.Info("stopping...")
 
 	if len(r.conns()) == 0 {
 		r.stopHandlers()
@@ -854,7 +853,7 @@ func (r *Consumer) Stop() {
 		for _, c := range r.conns() {
 			err := c.WriteCommand(StartClose())
 			if err != nil {
-				r.log(LogLevelError, "(%s) error sending CLS - %s", c.String(), err)
+				clog.Errorf("(%s) error sending CLS - %s", c.String(), err)
 			}
 		}
 
@@ -866,7 +865,7 @@ func (r *Consumer) Stop() {
 
 func (r *Consumer) stopHandlers() {
 	r.stopHandler.Do(func() {
-		r.log(LogLevelInfo, "stopping handlers")
+		clog.Info("stopping handlers")
 		close(r.incomingMessages)
 	})
 }
@@ -900,7 +899,7 @@ func (r *Consumer) AddConcurrentHandlers(handler Handler, concurrency int) {
 }
 
 func (r *Consumer) handlerLoop(handler Handler) {
-	r.log(LogLevelDebug, "starting Handler")
+	clog.Debug("starting Handler")
 
 	for {
 		message, ok := <-r.incomingMessages
@@ -915,7 +914,7 @@ func (r *Consumer) handlerLoop(handler Handler) {
 
 		err := handler.HandleMessage(message)
 		if err != nil {
-			r.log(LogLevelError, "Handler returned error (%s) for msg %s", err, message.ID)
+			clog.Errorf("Handler returned error (%s) for msg %s", err, message.ID)
 			if !message.IsAutoResponseDisabled() {
 				message.Requeue(-1)
 			}
@@ -928,7 +927,7 @@ func (r *Consumer) handlerLoop(handler Handler) {
 	}
 
 exit:
-	r.log(LogLevelDebug, "stopping Handler")
+	clog.Debug("stopping Handler")
 	if atomic.AddInt32(&r.runningHandlers, -1) == 0 {
 		r.exit()
 	}
@@ -937,7 +936,7 @@ exit:
 func (r *Consumer) shouldFailMessage(message *Message, handler interface{}) bool {
 	// message passed the max number of attempts
 	if r.config.MaxAttempts > 0 && message.Attempts > r.config.MaxAttempts {
-		r.log(LogLevelWarning, "msg %s attempted %d times, giving up",
+		clog.Debugf("WARNING: msg %s attempted %d times, giving up",
 			message.ID, message.Attempts)
 
 		logger, ok := handler.(FailedMessageLogger)

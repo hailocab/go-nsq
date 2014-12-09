@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mreiferson/go-snappystream"
+	clog "github.com/cihub/seelog"
 )
 
 // IdentifyResponse represents the metadata
@@ -153,12 +154,12 @@ func (c *Conn) Connect() (*IdentifyResponse, error) {
 
 	if resp != nil && resp.AuthRequired {
 		if c.config.AuthSecret == "" {
-			c.log(LogLevelError, "Auth Required")
+			clog.Error("Auth Required")
 			return nil, errors.New("Auth Required")
 		}
 		err := c.auth(c.config.AuthSecret)
 		if err != nil {
-			c.log(LogLevelError, "Auth Failed %s", err)
+			clog.Errorf("Auth Failed %s", err)
 			return nil, err
 		}
 	}
@@ -250,7 +251,7 @@ func (c *Conn) WriteCommand(cmd *Command) error {
 exit:
 	c.mtx.Unlock()
 	if err != nil {
-		c.log(LogLevelError, "IO error - %s", err)
+		clog.Errorf("IO error - %s", err)
 		c.delegate.OnIOError(c, err)
 	}
 	return err
@@ -316,12 +317,12 @@ func (c *Conn) identify() (*IdentifyResponse, error) {
 		return nil, ErrIdentify{err.Error()}
 	}
 
-	c.log(LogLevelDebug, "IDENTIFY response: %+v", resp)
+	clog.Debugf("IDENTIFY response: %+v", resp)
 
 	c.maxRdyCount = resp.MaxRdyCount
 
 	if resp.TLSv1 {
-		c.log(LogLevelInfo, "upgrading to TLS")
+		clog.Info("upgrading to TLS")
 		err := c.upgradeTLS(c.config.TlsConfig)
 		if err != nil {
 			return nil, ErrIdentify{err.Error()}
@@ -329,7 +330,7 @@ func (c *Conn) identify() (*IdentifyResponse, error) {
 	}
 
 	if resp.Deflate {
-		c.log(LogLevelInfo, "upgrading to Deflate")
+		clog.Info("upgrading to Deflate")
 		err := c.upgradeDeflate(c.config.DeflateLevel)
 		if err != nil {
 			return nil, ErrIdentify{err.Error()}
@@ -337,7 +338,7 @@ func (c *Conn) identify() (*IdentifyResponse, error) {
 	}
 
 	if resp.Snappy {
-		c.log(LogLevelInfo, "upgrading to Snappy")
+		clog.Info("upgrading to Snappy")
 		err := c.upgradeSnappy()
 		if err != nil {
 			return nil, ErrIdentify{err.Error()}
@@ -444,7 +445,7 @@ func (c *Conn) auth(secret string) error {
 		return err
 	}
 
-	c.log(LogLevelInfo, "Auth accepted. Identity: %q %s Permissions: %d", resp.Identity, resp.IdentityUrl, resp.PermissionCount)
+	clog.Infof("Auth accepted. Identity: %q %s Permissions: %d", resp.Identity, resp.IdentityUrl, resp.PermissionCount)
 
 	return nil
 }
@@ -458,18 +459,18 @@ func (c *Conn) readLoop() {
 		frameType, data, err := ReadUnpackedResponse(c)
 		if err != nil {
 			if !strings.Contains(err.Error(), "use of closed network connection") {
-				c.log(LogLevelError, "IO error - %s", err)
+				clog.Errorf("IO error - %s", err)
 				c.delegate.OnIOError(c, err)
 			}
 			goto exit
 		}
 
 		if frameType == FrameTypeResponse && bytes.Equal(data, []byte("_heartbeat_")) {
-			c.log(LogLevelDebug, "heartbeat received")
+			clog.Trace("heartbeat received")
 			c.delegate.OnHeartbeat(c)
 			err := c.WriteCommand(Nop())
 			if err != nil {
-				c.log(LogLevelError, "IO error - %s", err)
+				clog.Errorf("IO error - %s", err)
 				c.delegate.OnIOError(c, err)
 				goto exit
 			}
@@ -482,7 +483,7 @@ func (c *Conn) readLoop() {
 		case FrameTypeMessage:
 			msg, err := DecodeMessage(data)
 			if err != nil {
-				c.log(LogLevelError, "IO error - %s", err)
+				clog.Errorf("IO error - %s", err)
 				c.delegate.OnIOError(c, err)
 				goto exit
 			}
@@ -494,10 +495,10 @@ func (c *Conn) readLoop() {
 
 			c.delegate.OnMessage(c, msg)
 		case FrameTypeError:
-			c.log(LogLevelError, "protocol error - %s", data)
+			clog.Errorf("protocol error - %s", data)
 			c.delegate.OnError(c, data)
 		default:
-			c.log(LogLevelError, "IO error - %s", err)
+			clog.Errorf("IO error - %s", err)
 			c.delegate.OnIOError(c, fmt.Errorf("unknown frame type %d", frameType))
 		}
 	}
@@ -512,24 +513,24 @@ exit:
 		// writeLoop won't
 		c.close()
 	} else {
-		c.log(LogLevelWarning, "delaying close, %d outstanding messages", messagesInFlight)
+		clog.Warnf("delaying close, %d outstanding messages", messagesInFlight)
 	}
 	c.wg.Done()
-	c.log(LogLevelInfo, "readLoop exiting")
+	clog.Info("readLoop exiting")
 }
 
 func (c *Conn) writeLoop() {
 	for {
 		select {
 		case <-c.exitChan:
-			c.log(LogLevelInfo, "breaking out of writeLoop")
+			clog.Info("breaking out of writeLoop")
 			// Indicate drainReady because we will not pull any more off msgResponseChan
 			close(c.drainReady)
 			goto exit
 		case cmd := <-c.cmdChan:
 			err := c.WriteCommand(cmd)
 			if err != nil {
-				c.log(LogLevelError, "error sending command %s - %s", cmd, err)
+				clog.Errorf("error sending command %s - %s", cmd, err)
 				c.close()
 				continue
 			}
@@ -538,13 +539,13 @@ func (c *Conn) writeLoop() {
 			msgsInFlight := atomic.AddInt64(&c.messagesInFlight, -1)
 
 			if resp.success {
-				c.log(LogLevelDebug, "FIN %s", resp.msg.ID)
+				clog.Tracef("FIN %s", resp.msg.ID)
 				c.delegate.OnMessageFinished(c, resp.msg)
 				if resp.backoff {
 					c.delegate.OnResume(c)
 				}
 			} else {
-				c.log(LogLevelDebug, "REQ %s", resp.msg.ID)
+				clog.Tracef("REQ %s", resp.msg.ID)
 				c.delegate.OnMessageRequeued(c, resp.msg)
 				if resp.backoff {
 					c.delegate.OnBackoff(c)
@@ -553,7 +554,7 @@ func (c *Conn) writeLoop() {
 
 			err := c.WriteCommand(resp.cmd)
 			if err != nil {
-				c.log(LogLevelError, "error sending command %s - %s", resp.cmd, err)
+				clog.Errorf("error sending command %s - %s", resp.cmd, err)
 				c.close()
 				continue
 			}
@@ -568,7 +569,7 @@ func (c *Conn) writeLoop() {
 
 exit:
 	c.wg.Done()
-	c.log(LogLevelInfo, "writeLoop exiting")
+	clog.Info("writeLoop exiting")
 }
 
 func (c *Conn) close() {
@@ -598,7 +599,7 @@ func (c *Conn) close() {
 	//         d. trigger Delegate OnClose()
 	//
 	c.stopper.Do(func() {
-		c.log(LogLevelInfo, "beginning close")
+		clog.Info("beginning close")
 		close(c.exitChan)
 		c.conn.CloseRead()
 
@@ -625,13 +626,13 @@ func (c *Conn) cleanup() {
 			msgsInFlight = atomic.LoadInt64(&c.messagesInFlight)
 		}
 		if msgsInFlight > 0 {
-			c.log(LogLevelWarning, "draining... waiting for %d messages in flight", msgsInFlight)
+			clog.Warnf("draining... waiting for %d messages in flight", msgsInFlight)
 			continue
 		}
 		// until the readLoop has exited we cannot be sure that there
 		// still won't be a race
 		if atomic.LoadInt32(&c.readLoopRunning) == 1 {
-			c.log(LogLevelWarning, "draining... readLoop still running")
+			clog.Warn("draining... readLoop still running")
 			continue
 		}
 		goto exit
@@ -640,7 +641,7 @@ func (c *Conn) cleanup() {
 exit:
 	ticker.Stop()
 	c.wg.Done()
-	c.log(LogLevelInfo, "finished draining, cleanup exiting")
+	clog.Info("finished draining, cleanup exiting")
 }
 
 func (c *Conn) waitForCleanup() {
@@ -648,7 +649,7 @@ func (c *Conn) waitForCleanup() {
 	// (and cleanup goroutine above) have exited
 	c.wg.Wait()
 	c.conn.CloseWrite()
-	c.log(LogLevelInfo, "clean close complete")
+	clog.Info("clean close complete")
 	c.delegate.OnClose(c)
 }
 

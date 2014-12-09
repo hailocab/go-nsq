@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	clog "github.com/cihub/seelog"
 )
 
 // Producer is a high-level type to publish to NSQ.
@@ -109,7 +111,7 @@ func (w *Producer) Stop() {
 		w.guard.Unlock()
 		return
 	}
-	w.log(LogLevelInfo, "stopping")
+	clog.Info("stopping")
 	close(w.exitChan)
 	w.close()
 	w.guard.Unlock()
@@ -212,14 +214,14 @@ func (w *Producer) connect() error {
 		return ErrNotConnected
 	}
 
-	w.log(LogLevelInfo, "(%s) connecting to nsqd", w.addr)
+	clog.Infof("(%s) connecting to nsqd", w.addr)
 
 	w.conn = NewConn(w.addr, &w.config, &producerConnDelegate{w})
 	w.conn.SetLogger(w.logger, w.logLvl, fmt.Sprintf("%3d (%%s)", w.id))
 	_, err := w.conn.Connect()
 	if err != nil {
 		w.conn.Close()
-		w.log(LogLevelError, "(%s) error connecting to nsqd - %s", w.addr, err)
+		clog.Errorf("(%s) error connecting to nsqd - %s", w.addr, err)
 		atomic.StoreInt32(&w.state, StateInit)
 		return err
 	}
@@ -250,7 +252,7 @@ func (w *Producer) router() {
 			w.transactions = append(w.transactions, t)
 			err := w.conn.WriteCommand(t.cmd)
 			if err != nil {
-				w.log(LogLevelError, "(%s) sending command - %s", w.conn.String(), err)
+				clog.Errorf("(%s) sending command - %s", w.conn.String(), err)
 				w.close()
 			}
 		case data := <-w.responseChan:
@@ -267,7 +269,7 @@ func (w *Producer) router() {
 exit:
 	w.transactionCleanup()
 	w.wg.Done()
-	w.log(LogLevelInfo, "exiting router")
+	clog.Info("exiting router")
 }
 
 func (w *Producer) popTransaction(frameType int32, data []byte) {
