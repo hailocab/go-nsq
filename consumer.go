@@ -812,7 +812,7 @@ func (r *Consumer) redistributeRDY() {
 	for _, c := range conns {
 		lastMsgDuration := time.Now().Sub(c.LastMessageTime())
 		rdyCount := c.RDY()
-		clog.Debugf("(%s) rdy: %d (last message received %s)",
+		clog.Tracef("(%s) rdy: %d (last message received %s)",
 			c.String(), rdyCount, lastMsgDuration)
 		if rdyCount > 0 && lastMsgDuration > r.config.LowRdyIdleTimeout {
 			clog.Tracef("(%s) idle connection, giving up RDY", c.String())
