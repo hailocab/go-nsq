@@ -637,7 +637,7 @@ func (c *Conn) cleanup() {
 		}
 		if msgsInFlight > 0 {
 			if time.Now().Sub(lastWarning) > time.Second {
-				c.log(LogLevelWarning, "draining... waiting for %d messages in flight", msgsInFlight)
+				clog.Warnf("draining... waiting for %d messages in flight", msgsInFlight)
 				lastWarning = time.Now()
 			}
 			continue
@@ -646,7 +646,7 @@ func (c *Conn) cleanup() {
 		// still won't be a race
 		if atomic.LoadInt32(&c.readLoopRunning) == 1 {
 			if time.Now().Sub(lastWarning) > time.Second {
-				c.log(LogLevelWarning, "draining... readLoop still running")
+				clog.Warnf("draining... readLoop still running")
 				lastWarning = time.Now()
 			}
 			continue
