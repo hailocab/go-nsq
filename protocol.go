@@ -5,30 +5,27 @@ import (
 	"errors"
 	"io"
 	"regexp"
-	"time"
 )
 
+// MagicV1 is the initial identifier sent when connecting for V1 clients
 var MagicV1 = []byte("  V1")
+
+// MagicV2 is the initial identifier sent when connecting for V2 clients
 var MagicV2 = []byte("  V2")
 
+// frame types
 const (
-	// when successful
 	FrameTypeResponse int32 = 0
-	// when an error occurred
-	FrameTypeError int32 = 1
-	// when it's a serialized message
-	FrameTypeMessage int32 = 2
+	FrameTypeError    int32 = 1
+	FrameTypeMessage  int32 = 2
 )
-
-// The amount of time nsqd will allow a client to idle, can be overriden
-const DefaultClientTimeout = 60 * time.Second
 
 var validTopicNameRegex = regexp.MustCompile(`^[\.a-zA-Z0-9_-]+$`)
 var validChannelNameRegex = regexp.MustCompile(`^[\.a-zA-Z0-9_-]+(#ephemeral)?$`)
 
 // IsValidTopicName checks a topic name for correctness
 func IsValidTopicName(name string) bool {
-	if len(name) > 32 || len(name) < 1 {
+	if len(name) > 64 || len(name) < 1 {
 		return false
 	}
 	return validTopicNameRegex.MatchString(name)
@@ -36,7 +33,7 @@ func IsValidTopicName(name string) bool {
 
 // IsValidChannelName checks a channel name for correctness
 func IsValidChannelName(name string) bool {
-	if len(name) > 32 || len(name) < 1 {
+	if len(name) > 64 || len(name) < 1 {
 		return false
 	}
 	return validChannelNameRegex.MatchString(name)
@@ -85,4 +82,15 @@ func UnpackResponse(response []byte) (int32, []byte, error) {
 	}
 
 	return int32(binary.BigEndian.Uint32(response)), response[4:], nil
+}
+
+// ReadUnpackedResponse reads and parses data from the underlying
+// TCP connection according to the NSQ TCP protocol spec and
+// returns the frameType, data or error
+func ReadUnpackedResponse(r io.Reader) (int32, []byte, error) {
+	resp, err := ReadResponse(r)
+	if err != nil {
+		return -1, nil, err
+	}
+	return UnpackResponse(resp)
 }

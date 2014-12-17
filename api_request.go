@@ -1,8 +1,8 @@
 package nsq
 
 import (
-	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -26,8 +26,7 @@ func (c *deadlinedConn) Write(b []byte) (n int, err error) {
 	return c.Conn.Write(b)
 }
 
-// A custom http.Transport with support for deadline timeouts
-func NewDeadlineTransport(timeout time.Duration) *http.Transport {
+func newDeadlineTransport(timeout time.Duration) *http.Transport {
 	transport := &http.Transport{
 		Dial: func(netw, addr string) (net.Conn, error) {
 			c, err := net.DialTimeout(netw, addr, timeout)
@@ -40,38 +39,40 @@ func NewDeadlineTransport(timeout time.Duration) *http.Transport {
 	return transport
 }
 
-// ApiRequest is a helper function to perform an HTTP request
-// and parse our NSQ daemon's expected response format, with deadlines.
-//
-//     {"status_code":200, "status_txt":"OK", "data":{...}}
-func ApiRequest(endpoint string) (*simplejson.Json, error) {
-	httpclient := &http.Client{Transport: NewDeadlineTransport(2 * time.Second)}
-	req, err := http.NewRequest("GET", endpoint, nil)
+func apiRequestNegotiateV1(method string, endpoint string, body io.Reader) (*simplejson.Json, error) {
+	httpclient := &http.Client{Transport: newDeadlineTransport(2 * time.Second)}
+	req, err := http.NewRequest(method, endpoint, body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Accept", "application/vnd.nsq; version=1.0")
 
 	resp, err := httpclient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 
-	body, err := ioutil.ReadAll(resp.Body)
+	respBody, err := ioutil.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
 		return nil, err
 	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("got response %s %q", resp.Status, respBody)
+	}
 
-	data, err := simplejson.NewJson(body)
+	if len(respBody) == 0 {
+		respBody = []byte("{}")
+	}
+
+	data, err := simplejson.NewJson(respBody)
 	if err != nil {
 		return nil, err
 	}
 
-	statusCode := data.Get("status_code").MustInt()
-	statusTxt := data.Get("status_txt").MustString()
-	if statusCode != 200 {
-		return nil, errors.New(fmt.Sprintf("response status_code = %d, status_txt = %s",
-			statusCode, statusTxt))
+	if resp.Header.Get("X-NSQ-Content-Type") == "nsq; version=1.0" {
+		return data, nil
 	}
 	return data.Get("data"), nil
 }

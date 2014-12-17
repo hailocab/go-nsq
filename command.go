@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 )
 
 var byteSpace = []byte(" ")
@@ -27,44 +28,56 @@ func (c *Command) String() string {
 	return string(c.Name)
 }
 
-// Write serializes the Command to the supplied Writer.
+// WriteTo implements the WriterTo interface and
+// serializes the Command to the supplied Writer.
 //
-// It is suggested that the target Writer is buffered to avoid performing many system calls.
-func (c *Command) Write(w io.Writer) error {
-	_, err := w.Write(c.Name)
+// It is suggested that the target Writer is buffered
+// to avoid performing many system calls.
+func (c *Command) WriteTo(w io.Writer) (int64, error) {
+	var total int64
+	var buf [4]byte
+
+	n, err := w.Write(c.Name)
+	total += int64(n)
 	if err != nil {
-		return err
+		return total, err
 	}
 
 	for _, param := range c.Params {
-		_, err := w.Write(byteSpace)
+		n, err := w.Write(byteSpace)
+		total += int64(n)
 		if err != nil {
-			return err
+			return total, err
 		}
-		_, err = w.Write(param)
+		n, err = w.Write(param)
+		total += int64(n)
 		if err != nil {
-			return err
+			return total, err
 		}
 	}
 
-	_, err = w.Write(byteNewLine)
+	n, err = w.Write(byteNewLine)
+	total += int64(n)
 	if err != nil {
-		return err
+		return total, err
 	}
 
 	if c.Body != nil {
-		bodySize := int32(len(c.Body))
-		err := binary.Write(w, binary.BigEndian, &bodySize)
+		bufs := buf[:]
+		binary.BigEndian.PutUint32(bufs, uint32(len(c.Body)))
+		n, err := w.Write(bufs)
+		total += int64(n)
 		if err != nil {
-			return err
+			return total, err
 		}
-		_, err = w.Write(c.Body)
+		n, err = w.Write(c.Body)
+		total += int64(n)
 		if err != nil {
-			return err
+			return total, err
 		}
 	}
 
-	return nil
+	return total, nil
 }
 
 // Identify creates a new Command to provide information about the client.  After connecting,
@@ -83,6 +96,13 @@ func Identify(js map[string]interface{}) (*Command, error) {
 	return &Command{[]byte("IDENTIFY"), nil, body}, nil
 }
 
+// Auth sends credentials for authentication
+//
+// After `Identify`, this is usually the first message sent, if auth is used.
+func Auth(secret string) (*Command, error) {
+	return &Command{[]byte("AUTH"), nil, []byte(secret)}, nil
+}
+
 // Register creates a new Command to add a topic/channel for the connected nsqd
 func Register(topic string, channel string) *Command {
 	params := [][]byte{[]byte(topic)}
@@ -92,7 +112,7 @@ func Register(topic string, channel string) *Command {
 	return &Command{[]byte("REGISTER"), params, nil}
 }
 
-// Unregister creates a new Command to remove a topic/channel for the connected nsqd
+// UnRegister creates a new Command to remove a topic/channel for the connected nsqd
 func UnRegister(topic string, channel string) *Command {
 	params := [][]byte{[]byte(topic)}
 	if len(channel) > 0 {
@@ -165,10 +185,10 @@ func Finish(id MessageID) *Command {
 }
 
 // Requeue creates a new Command to indicate that
-// a given message (by id) should be requeued after the given timeout (in ms)
-// NOTE: a timeout of 0 indicates immediate requeue
-func Requeue(id MessageID, timeoutMs int) *Command {
-	var params = [][]byte{id[:], []byte(strconv.Itoa(timeoutMs))}
+// a given message (by id) should be requeued after the given delay
+// NOTE: a delay of 0 indicates immediate requeue
+func Requeue(id MessageID, delay time.Duration) *Command {
+	var params = [][]byte{id[:], []byte(strconv.Itoa(int(delay / time.Millisecond)))}
 	return &Command{[]byte("REQ"), params, nil}
 }
 
