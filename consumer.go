@@ -44,11 +44,26 @@ func (h HandlerFunc) HandleMessage(m *Message) error {
 	return h(m)
 }
 
+// DiscoveryFilter is an interface accepted by `SetBehaviorDelegate()`
+// for filtering the nsqds returned from discovery via nsqlookupd
+type DiscoveryFilter interface {
+	Filter([]string) []string
+}
+
 // FailedMessageLogger is an interface that can be implemented by handlers that wish
 // to receive a callback when a message is deemed "failed" (i.e. the number of attempts
 // exceeded the Consumer specified MaxAttemptCount)
 type FailedMessageLogger interface {
 	LogFailedMessage(message *Message)
+}
+
+// ConsumerStats represents a snapshot of the state of a Consumer's connections and the messages
+// it has seen
+type ConsumerStats struct {
+	MessagesReceived uint64
+	MessagesFinished uint64
+	MessagesRequeued uint64
+	Connections      int
 }
 
 var instCount int64
@@ -76,6 +91,8 @@ type Consumer struct {
 	logger logger
 	logLvl LogLevel
 
+	behaviorDelegate interface{}
+
 	id      int64
 	topic   string
 	channel string
@@ -93,8 +110,10 @@ type Consumer struct {
 	rdyRetryMtx    sync.RWMutex
 	rdyRetryTimers map[string]*time.Timer
 
-	pendingConnections map[string]bool
+	pendingConnections map[string]*Conn
 	connections        map[string]*Conn
+
+	nsqdTCPAddrs []string
 
 	// used at connection close to force a possible reconnect
 	lookupdRecheckChan chan int
@@ -145,7 +164,7 @@ func NewConsumer(topic string, channel string, config *Config) (*Consumer, error
 		incomingMessages: make(chan *Message),
 
 		rdyRetryTimers:     make(map[string]*time.Timer),
-		pendingConnections: make(map[string]bool),
+		pendingConnections: make(map[string]*Conn),
 		connections:        make(map[string]*Conn),
 
 		lookupdRecheckChan: make(chan int, 1),
@@ -158,6 +177,16 @@ func NewConsumer(topic string, channel string, config *Config) (*Consumer, error
 	r.wg.Add(1)
 	go r.rdyLoop()
 	return r, nil
+}
+
+// Stats retrieves the current connection and message statistics for a Consumer
+func (r *Consumer) Stats() *ConsumerStats {
+	return &ConsumerStats{
+		MessagesReceived: atomic.LoadUint64(&r.messagesReceived),
+		MessagesFinished: atomic.LoadUint64(&r.messagesFinished),
+		MessagesRequeued: atomic.LoadUint64(&r.messagesRequeued),
+		Connections:      len(r.conns()),
+	}
 }
 
 func (r *Consumer) conns() []*Conn {
@@ -180,6 +209,26 @@ func (r *Consumer) conns() []*Conn {
 func (r *Consumer) SetLogger(l logger, lvl LogLevel) {
 	r.logger = l
 	r.logLvl = lvl
+}
+
+// SetBehaviorDelegate takes a type implementing one or more
+// of the following interfaces that modify the behavior
+// of the `Consumer`:
+//
+//    DiscoveryFilter
+//
+func (r *Consumer) SetBehaviorDelegate(cb interface{}) {
+	matched := false
+
+	if _, ok := cb.(DiscoveryFilter); ok {
+		matched = true
+	}
+
+	if !matched {
+		panic("behavior delegate does not have any recognized methods")
+	}
+
+	r.behaviorDelegate = cb
 }
 
 // perConnMaxInFlight calculates the per-connection max-in-flight count.
@@ -383,16 +432,22 @@ func (r *Consumer) queryLookupd() {
 	//     ],
 	//     "timestamp": 1340152173
 	// }
+	nsqdAddrs := make([]string, 0)
 	for i := range data.Get("producers").MustArray() {
 		producer := data.Get("producers").GetIndex(i)
 		broadcastAddress := producer.Get("broadcast_address").MustString()
 		port := producer.Get("tcp_port").MustInt()
-
-		// make an address, start a connection
 		joined := net.JoinHostPort(broadcastAddress, strconv.Itoa(port))
-		err = r.ConnectToNSQD(joined)
+		nsqdAddrs = append(nsqdAddrs, joined)
+	}
+	// apply filter
+	if discoveryFilter, ok := r.behaviorDelegate.(DiscoveryFilter); ok {
+		nsqdAddrs = discoveryFilter.Filter(nsqdAddrs)
+	}
+	for _, addr := range nsqdAddrs {
+		err = r.ConnectToNSQD(addr)
 		if err != nil && err != ErrAlreadyConnected {
-			clog.Errorf("(%s) error connecting to nsqd - %s", joined, err)
+			clog.Errorf("(%s) error connecting to nsqd - %s", addr, err)
 			continue
 		}
 	}
@@ -428,20 +483,24 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 
 	atomic.StoreInt32(&r.connectedFlag, 1)
 
-	_, pendingOk := r.pendingConnections[addr]
-	r.mtx.RLock()
-	_, ok := r.connections[addr]
-	r.mtx.RUnlock()
-
-	if ok || pendingOk {
-		return ErrAlreadyConnected
-	}
-
-	clog.Infof("(%s) connecting to nsqd", addr)
-
 	conn := NewConn(addr, &r.config, &consumerConnDelegate{r})
 	conn.SetLogger(r.logger, r.logLvl,
 		fmt.Sprintf("%3d [%s/%s] (%%s)", r.id, r.topic, r.channel))
+
+	r.mtx.Lock()
+	_, pendingOk := r.pendingConnections[addr]
+	_, ok := r.connections[addr]
+	if ok || pendingOk {
+		r.mtx.Unlock()
+		return ErrAlreadyConnected
+	}
+	if !pendingOk {
+		r.pendingConnections[addr] = conn
+	}
+	r.nsqdTCPAddrs = append(r.nsqdTCPAddrs, addr)
+	r.mtx.Unlock()
+
+	clog.Infof("(%s) connecting to nsqd", addr)
 
 	cleanupConnection := func() {
 		r.mtx.Lock()
@@ -449,8 +508,6 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 		r.mtx.Unlock()
 		conn.Close()
 	}
-
-	r.pendingConnections[addr] = true
 
 	resp, err := conn.Connect()
 	if err != nil {
@@ -473,8 +530,8 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 			conn, r.topic, r.channel, err.Error())
 	}
 
-	delete(r.pendingConnections, addr)
 	r.mtx.Lock()
+	delete(r.pendingConnections, addr)
 	r.connections[addr] = conn
 	r.mtx.Unlock()
 
@@ -482,6 +539,61 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 	for _, c := range r.conns() {
 		r.maybeUpdateRDY(c)
 	}
+
+	return nil
+}
+
+func indexOf(n string, h []string) int {
+	for i, a := range h {
+		if n == a {
+			return i
+		}
+	}
+	return -1
+}
+
+// DisconnectFromNSQD closes the connection to and removes the specified
+// `nsqd` address from the list
+func (r *Consumer) DisconnectFromNSQD(addr string) error {
+	r.mtx.Lock()
+	defer r.mtx.Unlock()
+
+	idx := indexOf(addr, r.nsqdTCPAddrs)
+	if idx == -1 {
+		return ErrNotConnected
+	}
+
+	// slice delete
+	r.nsqdTCPAddrs = append(r.nsqdTCPAddrs[:idx], r.nsqdTCPAddrs[idx+1:]...)
+
+	pendingConn, pendingOk := r.pendingConnections[addr]
+	conn, ok := r.connections[addr]
+
+	if ok {
+		conn.Close()
+	} else if pendingOk {
+		pendingConn.Close()
+	}
+
+	return nil
+}
+
+// DisconnectFromNSQLookupd removes the specified `nsqlookupd` address
+// from the list used for periodic discovery.
+func (r *Consumer) DisconnectFromNSQLookupd(addr string) error {
+	r.mtx.Lock()
+	defer r.mtx.Unlock()
+
+	idx := indexOf(addr, r.lookupdHTTPAddrs)
+	if idx == -1 {
+		return ErrNotConnected
+	}
+
+	if len(r.lookupdHTTPAddrs) == 1 {
+		return errors.New(fmt.Sprintf("cannot disconnect from only remaining nsqlookupd HTTP address %s", addr))
+	}
+
+	r.lookupdHTTPAddrs = append(r.lookupdHTTPAddrs[:idx], r.lookupdHTTPAddrs[idx+1:]...)
 
 	return nil
 }
@@ -634,28 +746,39 @@ func (r *Consumer) onConnClose(c *Conn) {
 	}
 
 	// we were the last one (and stopping)
-	if left == 0 && atomic.LoadInt32(&r.stopFlag) == 1 {
-		r.stopHandlers()
+	if atomic.LoadInt32(&r.stopFlag) == 1 {
+		if left == 0 {
+			r.stopHandlers()
+		}
 		return
 	}
 
 	r.mtx.RLock()
 	numLookupd := len(r.lookupdHTTPAddrs)
+	reconnect := indexOf(c.String(), r.nsqdTCPAddrs) >= 0
 	r.mtx.RUnlock()
-	if numLookupd != 0 && atomic.LoadInt32(&r.stopFlag) == 0 {
+	if numLookupd > 0 {
 		// trigger a poll of the lookupd
 		select {
 		case r.lookupdRecheckChan <- 1:
 		default:
 		}
-	} else if numLookupd == 0 && atomic.LoadInt32(&r.stopFlag) == 0 {
-		// there are no lookupd, try to reconnect after a bit
+	} else if reconnect {
+		// there are no lookupd and we still have this nsqd TCP address in our list...
+		// try to reconnect after a bit
 		go func(addr string) {
 			for {
 				clog.Debugf("(%s) re-connecting in 15 seconds...", addr)
 				time.Sleep(15 * time.Second)
 				if atomic.LoadInt32(&r.stopFlag) == 1 {
 					break
+				}
+				r.mtx.RLock()
+				reconnect := indexOf(addr, r.nsqdTCPAddrs) >= 0
+				r.mtx.RUnlock()
+				if !reconnect {
+					clog.Warnf("(%s) skipped reconnect after removal...", addr)
+					return
 				}
 				err := r.ConnectToNSQD(addr)
 				if err != nil && err != ErrAlreadyConnected {

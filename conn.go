@@ -281,10 +281,18 @@ func (c *Conn) identify() (*IdentifyResponse, error) {
 	ci["deflate_level"] = c.config.DeflateLevel
 	ci["snappy"] = c.config.Snappy
 	ci["feature_negotiation"] = true
-	ci["heartbeat_interval"] = int64(c.config.HeartbeatInterval / time.Millisecond)
+	if c.config.HeartbeatInterval == -1 {
+		ci["heartbeat_interval"] = -1
+	} else {
+		ci["heartbeat_interval"] = int64(c.config.HeartbeatInterval / time.Millisecond)
+	}
 	ci["sample_rate"] = c.config.SampleRate
 	ci["output_buffer_size"] = c.config.OutputBufferSize
-	ci["output_buffer_timeout"] = int64(c.config.OutputBufferTimeout / time.Millisecond)
+	if c.config.OutputBufferTimeout == -1 {
+		ci["output_buffer_timeout"] = -1
+	} else {
+		ci["output_buffer_timeout"] = int64(c.config.OutputBufferTimeout / time.Millisecond)
+	}
 	ci["msg_timeout"] = int64(c.config.MsgTimeout / time.Millisecond)
 	cmd, err := Identify(ci)
 	if err != nil {
@@ -451,6 +459,7 @@ func (c *Conn) auth(secret string) error {
 }
 
 func (c *Conn) readLoop() {
+	delegate := &connMessageDelegate{c}
 	for {
 		if atomic.LoadInt32(&c.closeFlag) == 1 {
 			goto exit
@@ -487,7 +496,7 @@ func (c *Conn) readLoop() {
 				c.delegate.OnIOError(c, err)
 				goto exit
 			}
-			msg.Delegate = &connMessageDelegate{c}
+			msg.Delegate = delegate
 
 			atomic.AddInt64(&c.rdyCount, -1)
 			atomic.AddInt64(&c.messagesInFlight, 1)
@@ -613,6 +622,7 @@ func (c *Conn) close() {
 func (c *Conn) cleanup() {
 	<-c.drainReady
 	ticker := time.NewTicker(100 * time.Millisecond)
+	lastWarning := time.Now()
 	// writeLoop has exited, drain any remaining in flight messages
 	for {
 		// we're racing with readLoop which potentially has a message
@@ -626,13 +636,19 @@ func (c *Conn) cleanup() {
 			msgsInFlight = atomic.LoadInt64(&c.messagesInFlight)
 		}
 		if msgsInFlight > 0 {
-			clog.Warnf("draining... waiting for %d messages in flight", msgsInFlight)
+			if time.Now().Sub(lastWarning) > time.Second {
+				clog.Warnf("draining... waiting for %d messages in flight", msgsInFlight)
+				lastWarning = time.Now()
+			}
 			continue
 		}
 		// until the readLoop has exited we cannot be sure that there
 		// still won't be a race
 		if atomic.LoadInt32(&c.readLoopRunning) == 1 {
-			clog.Warn("draining... readLoop still running")
+			if time.Now().Sub(lastWarning) > time.Second {
+				clog.Warnf("draining... readLoop still running")
+				lastWarning = time.Now()
+			}
 			continue
 		}
 		goto exit

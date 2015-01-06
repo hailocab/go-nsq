@@ -158,7 +158,7 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 	}
 	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
 	q, _ := NewConsumer(topicName, "ch", config)
-	q.SetLogger(nullLogger, LogLevelInfo)
+	// q.SetLogger(nullLogger, LogLevelInfo)
 
 	h := &MyTestHandler{
 		t: t,
@@ -177,12 +177,44 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 		t.Fatal(err)
 	}
 
+	stats := q.Stats()
+	if stats.Connections == 0 {
+		t.Fatal("stats report 0 connections (should be > 0)")
+	}
+
 	err = q.ConnectToNSQD(addr)
 	if err == nil {
 		t.Fatal("should not be able to connect to the same NSQ twice")
 	}
 
+	err = q.DisconnectFromNSQD("1.2.3.4:4150")
+	if err == nil {
+		t.Fatal("should not be able to disconnect from an unknown nsqd")
+	}
+
+	err = q.ConnectToNSQD("1.2.3.4:4150")
+	if err == nil {
+		t.Fatal("should not be able to connect to non-existent nsqd")
+	}
+
+	err = q.DisconnectFromNSQD("1.2.3.4:4150")
+	if err != nil {
+		t.Fatal("should be able to disconnect from an nsqd - " + err.Error())
+	}
+
 	<-q.StopChan
+
+	stats = q.Stats()
+	if stats.Connections != 0 {
+		t.Fatalf("stats report %d active connections (should be 0)", stats.Connections)
+	}
+
+	stats = q.Stats()
+	if stats.MessagesReceived != uint64(h.messagesReceived+h.messagesFailed) {
+		t.Fatalf("stats report %d messages received (should be %d)",
+			stats.MessagesReceived,
+			h.messagesReceived+h.messagesFailed)
+	}
 
 	if h.messagesReceived != 8 || h.messagesSent != 4 {
 		t.Fatalf("end of test. should have handled a diff number of messages (got %d, sent %d)", h.messagesReceived, h.messagesSent)
