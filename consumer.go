@@ -500,7 +500,9 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 	if !pendingOk {
 		r.pendingConnections[addr] = conn
 	}
-	r.nsqdTCPAddrs = append(r.nsqdTCPAddrs, addr)
+	if idx := indexOf(addr, r.nsqdTCPAddrs); idx == -1 {
+		r.nsqdTCPAddrs = append(r.nsqdTCPAddrs, addr)
+	}
 	r.mtx.Unlock()
 
 	clog.Infof("(%s) connecting to nsqd", addr)
