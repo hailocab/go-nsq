@@ -416,7 +416,7 @@ func (r *Consumer) nextLookupdEndpoint() string {
 func (r *Consumer) queryLookupd() {
 	endpoint := r.nextLookupdEndpoint()
 
-	clog.Debugf("querying nsqlookupd %s", endpoint)
+	clog.Tracef("querying nsqlookupd %s", endpoint)
 
 	data, err := apiRequestNegotiateV1("GET", endpoint, nil)
 	if err != nil {
